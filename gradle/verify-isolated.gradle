@@ -1,0 +1,12 @@
+// Optional build verification without reusing Android Studio's current outputs.
+gradle.beforeProject { project ->
+    def run = project.findProperty("verificationRun") ?: "default"
+    project.layout.buildDirectory.set(new File(project.rootDir, ".android-verification/" + run + "/" + project.name))
+    if (project.findProperty("verificationApp") == "true") {
+        project.plugins.withId("com.android.application") {
+            project.extensions.getByName("androidComponents").finalizeDsl { android ->
+                android.defaultConfig.applicationId = "com.campustrade.auth.paymentverification"
+            }
+        }
+    }
+}

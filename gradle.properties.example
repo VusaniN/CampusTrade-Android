@@ -1,0 +1,5 @@
+# Copy this file to ~/.gradle/gradle.properties (or %USERPROFILE%\.gradle\gradle.properties
+# on Windows) and uncomment the line below to enable the moderator tab.
+# Builds without an admin passcode keep the moderator tools locked.
+
+# campustradeAdminPasscode=YOUR_ADMIN_PASSCODE_HERE

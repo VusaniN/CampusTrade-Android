@@ -1,0 +1,609 @@
+rules_version = '2';
+// CampusTrade Firestore rules (D4).
+//
+// Deploy after testing:
+//   firebase deploy --only firestore:rules
+//
+// Security model:
+//  - Only signed-in, verified @vossie.net accounts are treated as students.
+//  - users/{uid} is private (owner + admin). publicProfiles/{uid} is the
+//    signed-in directory used for names, email -> uid lookup and course/year.
+//  - Orders must reference a real, available listing owned by the seller.
+//  - Order status changes follow the same approval workflow as the app.
+//  - Ratings require a COMPLETED order and one review per student per order.
+//  - Private study groups are readable only by their owner and members.
+//  - Chats use deterministic document ids and must match a real listing/seller
+//    (or the explicit "direct" conversation marker).
+// Always test changes in the Firebase Rules Playground / emulator before
+// publishing them to the shared project.
+
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    // A Firebase account with a campus email. This is intentionally separate
+    // from signedIn(): registration must be able to create the profile before
+    // the student clicks the verification link.
+    function campusAccount() {
+      return request.auth != null
+        && request.auth.token.email is string
+        && request.auth.token.email.lower().matches('.*@vossie[.]net');
+    }
+
+    // Every normal read/write requires a verified campus account.
+    function signedIn() {
+      return campusAccount() && request.auth.token.email_verified == true;
+    }
+
+    function isAccountOwner(userId) {
+      return campusAccount() && request.auth.uid == userId;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    // isAdmin is set in the Firebase console, never by the client.
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(db)/documents/users/$(request.auth.uid))
+        && get(/databases/$(db)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    function isShortText(value, maxLen) {
+      return value is string && value.size() <= maxLen;
+    }
+
+    function chatDocId(buyer, seller, listing) {
+      return buyer + '_' + seller + '_' + listing;
+    }
+
+    // ---- private student profile -------------------------------------------
+    match /users/{userId} {
+      // Only the owner and moderators can read the private profile. In
+      // particular, studentNumber is never exposed to other students.
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAccountOwner(userId)
+        && !("isAdmin" in request.resource.data)
+        && request.resource.data.uid == userId
+        && request.resource.data.stuEmail is string
+        && request.resource.data.stuEmail.lower() == request.auth.token.email.lower()
+        && request.resource.data.studentNumber is string
+        && request.resource.data.rating == 0
+        && isShortText(request.resource.data.stuName, 120);
+      // Owners may edit their profile, but never trust/identity fields.
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.stuEmail == resource.data.stuEmail
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(['isAdmin', 'rating', 'uid', 'createdAt', 'stuEmail', 'studentNumber'])
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['stuName', 'course', 'year', 'profileImage', 'lastActive', 'updatedAt']);
+      // Owner can deactivate or soft-delete their own account.
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountStatus', 'updatedAt'])
+        && request.resource.data.accountStatus in ['deactivated', 'deleted'];
+      // Moderators can suspend, restore or delete accounts.
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountStatus', 'updatedAt']);
+      allow delete: if isAdmin();
+    }
+
+    // ---- public student directory -----------------------------------------
+    // Deliberately excludes studentNumber. Contains only information other
+    // students need to find a seller and show a display name.
+    match /publicProfiles/{userId} {
+      allow read: if signedIn();
+      allow create: if isAccountOwner(userId)
+        && request.resource.data.uid == userId
+        && request.resource.data.stuEmail is string
+        && request.resource.data.stuEmail.lower() == request.auth.token.email.lower()
+        && (!("rating" in request.resource.data) || request.resource.data.rating == 0)
+        && (!("createdAt" in request.resource.data)
+             || request.resource.data.createdAt is timestamp)
+        && (!("updatedAt" in request.resource.data)
+             || request.resource.data.updatedAt is timestamp)
+        && request.resource.data.keys().hasOnly(
+             ['uid', 'stuName', 'stuEmail', 'course', 'year', 'rating', 'createdAt', 'updatedAt', 'profileImage', 'lastActive']);
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.stuEmail == resource.data.stuEmail
+        && (!("rating" in resource.data)
+             || (("rating" in request.resource.data)
+                 && request.resource.data.rating == resource.data.rating))
+        && (!("updatedAt" in request.resource.data)
+             || request.resource.data.updatedAt is timestamp)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['stuName', 'course', 'year', 'profileImage', 'lastActive', 'updatedAt']);
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // ---- marketplace listings ---------------------------------------------
+    match /listings/{listingId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.sellerID == request.auth.uid
+        && !("isAdmin" in request.resource.data)
+        && request.resource.data.status == 'AVAILABLE'
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0
+        && request.resource.data.listingN is string
+        && request.resource.data.listingN.size() > 0
+        && isShortText(request.resource.data.listingN, 200)
+        && isShortText(request.resource.data.description, 5000)
+        && isShortText(request.resource.data.category, 80)
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.negotiable is bool
+        && request.resource.data.viewCount is number
+        && request.resource.data.viewCount >= 0
+        && request.resource.data.favouriteCount is number
+        && request.resource.data.favouriteCount >= 0
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.keys().hasOnly(
+             ['sellerID', 'sellerName', 'listingN', 'description', 'price', 'category',
+              'condition', 'location', 'delivery', 'status', 'imageURL', 'photos',
+              'documentURL', 'documentName', 'documentMime', 'documentSize', 'createdAt',
+              'expiresAt', 'negotiable', 'viewCount', 'favouriteCount', 'updatedAt']);
+      allow update: if signedIn()
+        && resource.data.sellerID == request.auth.uid
+        && request.resource.data.sellerID == resource.data.sellerID
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0
+        && request.resource.data.status in ['AVAILABLE', 'PAUSED', 'SOLD', 'RESERVED', 'ORDERED']
+        && (!("expiresAt" in request.resource.data) || request.resource.data.expiresAt is timestamp)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+             ['sellerName', 'listingN', 'description', 'price', 'category', 'condition', 'location',
+              'delivery', 'status', 'imageURL', 'photos', 'documentURL', 'documentName',
+              'documentMime', 'documentSize', 'negotiable', 'viewCount', 'favouriteCount',
+              'expiresAt', 'updatedAt']);
+      // Any signed-in student can add one view count or one favourite count.
+      // The seller update above still covers owner edits.
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount', 'updatedAt'])
+        && request.resource.data.viewCount == resource.data.get('viewCount', 0) + 1
+        && request.resource.data.updatedAt is timestamp;
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['favouriteCount', 'updatedAt'])
+        && (request.resource.data.favouriteCount == resource.data.get('favouriteCount', 0) + 1
+          || request.resource.data.favouriteCount == resource.data.get('favouriteCount', 0) - 1)
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if signedIn()
+        && (resource.data.sellerID == request.auth.uid || isAdmin());
+    }
+
+    // ---- orders ------------------------------------------------------------
+    match /orders/{orderId} {
+      function coreFieldsUnchanged() {
+        return request.resource.data.buyerId == resource.data.buyerId
+          && request.resource.data.sellerId == resource.data.sellerId
+          && request.resource.data.listingId == resource.data.listingId
+          && request.resource.data.price == resource.data.price
+          && (!("listPrice" in resource.data)
+              || request.resource.data.listPrice == resource.data.listPrice);
+      }
+
+      function changedOnly(keys) {
+        return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+      }
+
+      function cancellationFieldsSet() {
+        return request.resource.data.cancellationRequester is string
+          && request.resource.data.cancellationReason is string
+          && request.resource.data.cancellationReason.size() <= 500
+          && request.resource.data.cancellationOutcome is string
+          && request.resource.data.cancellationTime is number
+          && request.resource.data.cancellationTime > 0;
+      }
+
+      allow read: if signedIn()
+        && (resource.data.buyerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid
+          || isAdmin());
+
+      // A purchase starts as a request. The listing must exist, belong to the
+      // stated seller, be available, and the price must be derived from that
+      // listing. Negotiated offers may be lower than list price but never higher.
+      allow create: if signedIn()
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.sellerId is string
+        && request.resource.data.sellerId != request.auth.uid
+        && request.resource.data.status == 'REQUESTED'
+        && request.resource.data.listingId is string
+        && request.resource.data.listingId.size() > 0
+        && exists(/databases/$(db)/documents/listings/$(request.resource.data.listingId))
+        && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.sellerID
+             == request.resource.data.sellerId
+        && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.status
+             == 'AVAILABLE'
+        && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.price
+             is number
+        && request.resource.data.listPrice is number
+        && request.resource.data.listPrice
+             == get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.price
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0
+        && request.resource.data.price <= request.resource.data.listPrice
+        && request.resource.data.title is string
+        && request.resource.data.title
+             == get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.listingN
+        && request.resource.data.category is string
+        && request.resource.data.category
+             == get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.category
+        && request.resource.data.buyerEmail is string
+        && request.resource.data.buyerEmail.lower() == request.auth.token.email.lower()
+        && request.resource.data.sellerEmail is string
+        && request.resource.data.sellerEmail.size() <= 200
+        && request.resource.data.method is string
+        && request.resource.data.method.size() > 0
+        && request.resource.data.method.size() <= 80
+        && request.resource.data.buyerName is string
+        && request.resource.data.buyerName.size() >= 2
+        && request.resource.data.buyerName.size() <= 120
+        && request.resource.data.buyerPhone is string
+        && request.resource.data.buyerPhone.size() >= 7
+        && request.resource.data.buyerPhone.size() <= 30
+        && request.resource.data.reference is string
+        && request.resource.data.reference.size() <= 300
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.keys().hasOnly(
+             ['listingId', 'buyerId', 'sellerId', 'title', 'price', 'listPrice', 'method',
+              'buyerEmail', 'sellerEmail', 'buyerName', 'buyerPhone', 'reference',
+              'category', 'status', 'createdAt']);
+
+      // Explicit transitions only. Cancellation metadata is not free-form:
+      //  - REQUESTED -> HELD by seller
+      //  - REQUESTED -> CANCELLED by buyer (withdraw) or seller (decline)
+      //  - HELD -> COMPLETED by buyer, only when no cancellation is pending
+      //  - HELD -> HELD for request/withdraw/decline cancellation
+      //  - HELD -> CANCELLED for the other participant's approval
+      //  - COMPLETED -> COMPLETED for a seller payout request
+      allow update: if signedIn()
+        && (resource.data.buyerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid)
+        && coreFieldsUnchanged()
+        && request.resource.data.updatedAt is timestamp
+        && (
+          // Seller accepts the purchase request.
+          (resource.data.status == 'REQUESTED'
+            && request.resource.data.status == 'HELD'
+            && request.auth.uid == resource.data.sellerId
+            && changedOnly(['status', 'updatedAt']))
+          ||
+          // Buyer withdraws, or seller declines, a pending request.
+          (resource.data.status == 'REQUESTED'
+            && request.resource.data.status == 'CANCELLED'
+            && cancellationFieldsSet()
+            && request.resource.data.cancellationRequester == ''
+            && changedOnly(['status', 'cancellationRequester', 'cancellationReason',
+                            'cancellationOutcome', 'cancellationTime', 'updatedAt'])
+            && (
+              (request.auth.uid == resource.data.buyerId
+                && request.resource.data.cancellationOutcome == 'Withdrawn by buyer')
+              || (request.auth.uid == resource.data.sellerId
+                && request.resource.data.cancellationOutcome in
+                   ['Declined by seller', 'Another request was accepted'])
+            ))
+          ||
+          // Buyer confirms collection. A pending cancellation blocks this.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'COMPLETED'
+            && request.auth.uid == resource.data.buyerId
+            && resource.data.get('cancellationRequester', '') == ''
+            && changedOnly(['status', 'updatedAt']))
+          ||
+          // Either participant asks the other to cancel a held order.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'HELD'
+            && resource.data.get('cancellationRequester', '') == ''
+            && cancellationFieldsSet()
+            && request.resource.data.cancellationRequester == request.auth.token.email.lower()
+            && request.resource.data.cancellationReason.size() > 0
+            && request.resource.data.cancellationOutcome == 'Requested'
+            && changedOnly(['status', 'cancellationRequester', 'cancellationReason',
+                            'cancellationOutcome', 'cancellationTime', 'updatedAt']))
+          ||
+          // The requester withdraws their own cancellation request.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'HELD'
+            && resource.data.get('cancellationRequester', '') == request.auth.token.email.lower()
+            && cancellationFieldsSet()
+            && request.resource.data.cancellationRequester == ''
+            && request.resource.data.cancellationOutcome == 'Withdrawn'
+            && changedOnly(['status', 'cancellationRequester', 'cancellationReason',
+                            'cancellationOutcome', 'cancellationTime', 'updatedAt']))
+          ||
+          // The other participant declines a cancellation request.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'HELD'
+            && resource.data.get('cancellationRequester', '') != ''
+            && resource.data.get('cancellationRequester', '') != request.auth.token.email.lower()
+            && cancellationFieldsSet()
+            && request.resource.data.cancellationRequester == ''
+            && request.resource.data.cancellationOutcome == 'Declined'
+            && changedOnly(['status', 'cancellationRequester', 'cancellationReason',
+                            'cancellationOutcome', 'cancellationTime', 'updatedAt']))
+          ||
+          // The other participant approves the cancellation.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'CANCELLED'
+            && resource.data.get('cancellationRequester', '') != ''
+            && resource.data.get('cancellationRequester', '') != request.auth.token.email.lower()
+            && cancellationFieldsSet()
+            && request.resource.data.cancellationRequester == ''
+            && request.resource.data.cancellationOutcome == 'Approved'
+            && changedOnly(['status', 'cancellationRequester', 'cancellationReason',
+                            'cancellationOutcome', 'cancellationTime', 'updatedAt']))
+          ||
+          // Seller records a future payout preference for a completed sale.
+          (resource.data.status == 'COMPLETED'
+            && request.resource.data.status == 'COMPLETED'
+            && request.auth.uid == resource.data.sellerId
+            && resource.data.get('payoutRequestedAt', 0) == 0
+            && resource.data.method != 'Cash on collection'
+            && resource.data.method != 'Free collection'
+            && resource.data.price > 0
+            && request.resource.data.payoutRequestedAt is number
+            && request.resource.data.payoutRequestedAt > 0
+            && request.resource.data.payoutMethod in ['Bank transfer', 'Payment-provider balance']
+            && request.resource.data.payoutSchedule in ['After collection', 'Weekly', 'On request']
+            && changedOnly(['payoutRequestedAt', 'payoutMethod', 'payoutSchedule', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // ---- chats -------------------------------------------------------------
+    match /chats/{chatId} {
+      allow read: if signedIn()
+        && (resource.data.buyerID == request.auth.uid
+          || resource.data.sellerID == request.auth.uid);
+
+      // The buyer opens one chat per listing/seller, or one "direct" chat.
+      // Deterministic ids make duplicate creation idempotent in the client.
+      allow create: if signedIn()
+        && request.resource.data.buyerID == request.auth.uid
+        && request.resource.data.sellerID is string
+        && request.resource.data.sellerID != request.auth.uid
+        && request.resource.data.listingID is string
+        && request.resource.data.createdDate is timestamp
+        && request.resource.data.keys().hasOnly(['buyerID', 'sellerID', 'listingID', 'createdDate'])
+        && chatId == chatDocId(request.resource.data.buyerID,
+                               request.resource.data.sellerID,
+                               request.resource.data.listingID)
+        && (
+          (request.resource.data.listingID == 'direct'
+            && exists(/databases/$(db)/documents/publicProfiles/$(request.resource.data.sellerID)))
+          ||
+          (request.resource.data.listingID != 'direct'
+            && exists(/databases/$(db)/documents/listings/$(request.resource.data.listingID))
+            && get(/databases/$(db)/documents/listings/$(request.resource.data.listingID)).data.sellerID
+                 == request.resource.data.sellerID)
+        );
+      // Each student may only update the short typing hint in the chat header.
+      allow update: if signedIn()
+        && (resource.data.buyerID == request.auth.uid
+          || resource.data.sellerID == request.auth.uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['typingUid', 'typingAt'])
+        && request.resource.data.typingUid == request.auth.uid
+        && request.resource.data.typingAt is timestamp;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn()
+          && (get(/databases/$(db)/documents/chats/$(chatId)).data.buyerID == request.auth.uid
+            || get(/databases/$(db)/documents/chats/$(chatId)).data.sellerID == request.auth.uid);
+        allow create: if signedIn()
+          && request.resource.data.senderID == request.auth.uid
+          && request.resource.data.message is string
+          && request.resource.data.message.size() > 0
+          && request.resource.data.message.size() <= 2000
+          && request.resource.data.timestamp is timestamp
+          && request.resource.data.keys().hasOnly(['senderID', 'message', 'timestamp'])
+          && (get(/databases/$(db)/documents/chats/$(chatId)).data.buyerID == request.auth.uid
+            || get(/databases/$(db)/documents/chats/$(chatId)).data.sellerID == request.auth.uid);
+        // The recipient marks messages as read; nobody can edit the text or sender.
+        allow update: if signedIn()
+          && request.auth.uid != resource.data.senderID
+          && request.resource.data.readAt is timestamp
+          && request.resource.data.senderID == resource.data.senderID
+          && request.resource.data.message == resource.data.message
+          && request.resource.data.timestamp == resource.data.timestamp
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+          && (get(/databases/$(db)/documents/chats/$(chatId)).data.buyerID == request.auth.uid
+            || get(/databases/$(db)/documents/chats/$(chatId)).data.sellerID == request.auth.uid);
+        allow delete: if false;
+      }
+    }
+
+    // ---- ratings -----------------------------------------------------------
+    // Document id is "<orderId>_<reviewerUid>" (one review per student per
+    // order). The order must be COMPLETED before either participant can rate.
+    match /ratings/{ratingId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.reviewerID == request.auth.uid
+        && request.resource.data.reviewedUserID is string
+        && request.resource.data.reviewedUserID != request.auth.uid
+        && request.resource.data.rating is number
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5
+        && isShortText(request.resource.data.comment, 1000)
+        && request.resource.data.orderId is string
+        && request.resource.data.createdAt is timestamp
+        && ratingId == request.resource.data.orderId + '_' + request.auth.uid
+        && exists(/databases/$(db)/documents/orders/$(request.resource.data.orderId))
+        && get(/databases/$(db)/documents/orders/$(request.resource.data.orderId)).data.status
+             == 'COMPLETED'
+        && (
+          (get(/databases/$(db)/documents/orders/$(request.resource.data.orderId)).data.buyerId == request.auth.uid
+            && get(/databases/$(db)/documents/orders/$(request.resource.data.orderId)).data.sellerId
+               == request.resource.data.reviewedUserID)
+          || (get(/databases/$(db)/documents/orders/$(request.resource.data.orderId)).data.sellerId == request.auth.uid
+            && get(/databases/$(db)/documents/orders/$(request.resource.data.orderId)).data.buyerId
+               == request.resource.data.reviewedUserID)
+        );
+      // Moderators can remove a review after it is reported.
+      allow update, delete: if isAdmin();
+    }
+
+    match /feedback/{feedbackId} {
+      allow create: if signedIn()
+        && request.resource.data.userID == request.auth.uid
+        && isShortText(request.resource.data.description, 2000);
+      allow read, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /academicContent/{contentId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.uploaderID == request.auth.uid;
+      allow update, delete: if signedIn()
+        && resource.data.uploaderID == request.auth.uid;
+    }
+
+    // ---- study groups (not yet used by the client: groups are still local) --
+    match /studyGroups/{groupId} {
+      // Private group metadata is visible only to the owner and members.
+      allow read: if signedIn()
+        && (resource.data.get('private', false) == false
+          || resource.data.creatorID == request.auth.uid
+          || request.auth.uid in resource.data.get('members', []));
+      allow create: if signedIn()
+        && request.resource.data.creatorID == request.auth.uid;
+      allow update: if signedIn()
+        && request.resource.data.creatorID == resource.data.creatorID
+        && (
+          resource.data.creatorID == request.auth.uid
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+              && request.resource.data.members.toSet().difference(resource.data.members.toSet())
+                   .hasOnly([request.auth.uid])
+              && resource.data.members.toSet().difference(request.resource.data.members.toSet())
+                   .hasOnly([request.auth.uid])
+              && (request.resource.data.members.toSet().difference(resource.data.members.toSet()).size() == 0
+                  || resource.data.get('private', false) == false))
+        );
+      allow delete: if signedIn()
+        && resource.data.creatorID == request.auth.uid;
+
+      match /posts/{postId} {
+        // Group content is members-only.
+        allow read: if signedIn()
+          && request.auth.uid in get(/databases/$(db)/documents/studyGroups/$(groupId)).data.get('members', []);
+        allow create: if signedIn()
+          && request.resource.data.authorID == request.auth.uid
+          && request.auth.uid in get(/databases/$(db)/documents/studyGroups/$(groupId)).data.get('members', []);
+        allow update: if signedIn()
+          && request.auth.uid in get(/databases/$(db)/documents/studyGroups/$(groupId)).data.get('members', [])
+          && request.resource.data.authorID == resource.data.authorID
+          && (resource.data.authorID == request.auth.uid
+            || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']));
+        allow delete: if signedIn()
+          && resource.data.authorID == request.auth.uid;
+      }
+    }
+
+    // ---- optional sync targets: the app still stores these locally. --------
+    match /offers/{offerId} {
+      allow read: if signedIn()
+        && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.sellerId != request.auth.uid
+        && request.resource.data.state in ['Pending', 'Countered']
+        && exists(/databases/$(db)/documents/listings/$(request.resource.data.listingId))
+        && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.sellerID
+             == request.resource.data.sellerId;
+      allow update: if signedIn()
+        && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid)
+        && request.resource.data.buyerId == resource.data.buyerId
+        && request.resource.data.sellerId == resource.data.sellerId
+        && request.resource.data.listingId == resource.data.listingId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amount', 'turn', 'state', 'expiresAt']);
+      allow delete: if false;
+    }
+
+    // ---- pickup plans ------------------------------------------------------
+    match /pickups/{orderId} {
+      allow read: if signedIn()
+        && (resource.data.buyerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid);
+      allow create: if signedIn()
+        && exists(/databases/$(db)/documents/orders/$(orderId))
+        && get(/databases/$(db)/documents/orders/$(orderId)).data.buyerId
+             == request.resource.data.buyerId
+        && get(/databases/$(db)/documents/orders/$(orderId)).data.sellerId
+             == request.resource.data.sellerId
+        && (request.resource.data.buyerId == request.auth.uid
+          || request.resource.data.sellerId == request.auth.uid)
+        && request.resource.data.orderId == orderId
+        && request.resource.data.location is string
+        && request.resource.data.time is number
+        && request.resource.data.confirmed is list
+        && request.resource.data.confirmed.toSet().hasOnly([request.auth.token.email.lower()]);
+      allow update: if signedIn()
+        && (resource.data.buyerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid)
+        && request.resource.data.buyerId == resource.data.buyerId
+        && request.resource.data.sellerId == resource.data.sellerId
+        && request.resource.data.orderId == resource.data.orderId
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.confirmed.toSet()
+             .difference(resource.data.confirmed.toSet())
+             .hasOnly([request.auth.token.email.lower()])
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['location', 'time', 'confirmed', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /wanted/{itemId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow update: if signedIn()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == resource.data.ownerId;
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    match /searchAlerts/{alertId} {
+      allow read, update, delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+    }
+
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.state == 'Open';
+      allow read: if isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    // ---- favourites --------------------------------------------------------
+    match /favourites/{favouriteId} {
+      allow read: if signedIn()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.listingId is string
+        && request.resource.data.createdAt is timestamp
+        && favouriteId == request.auth.uid + '_' + request.resource.data.listingId;
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ---- administrator audit trail ----------------------------------------
+    match /admin_actions/{actionId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // ---- blocked users -----------------------------------------------------
+    match /blockedUsers/{blockId} {
+      allow read: if signedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.blockedUserId is string;
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}

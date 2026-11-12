@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="campus_orange">#E23A1D</color>
+    <color name="campus_orange_dark">#B52D16</color>
+    <color name="campus_orange_soft">#EDE8DE</color>
+    <color name="page_bg">#F7F5F0</color>
+    <color name="panel_bg">#F7F5F0</color>
+    <color name="field_border">#C0BEB6</color>
+    <color name="field_text">#191918</color>
+    <color name="muted_text">#72726D</color>
+    <color name="hint_text">#72726D</color>
+    <color name="warning_bg">#F0E9DB</color>
+    <color name="warning_text">#5C4A1E</color>
+</resources>

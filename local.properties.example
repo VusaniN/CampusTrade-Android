@@ -1,0 +1,9 @@
+# Copy this file to local.properties and replace the path with your Android SDK.
+# Do not commit local.properties.
+sdk.dir=C\:\\Users\\<your-user>\\AppData\\Local\\Android\\Sdk
+
+# Optional: live CampusTrade Helper AI.
+# Leave these blank to use the offline helper answers.
+# CAMPUSTRADE_HELPER_KEY=your_key_here
+# CAMPUSTRADE_HELPER_URL=https://your-ai-endpoint.example/v1/chat/completions
+# CAMPUSTRADE_HELPER_MODEL=your-model-name

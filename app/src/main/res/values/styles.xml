@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/page_bg</item>
+        <item name="android:navigationBarColor">@color/page_bg</item>
+        <item name="android:colorAccent">@color/campus_orange</item>
+        <item name="android:windowBackground">@color/page_bg</item>
+        <item name="android:colorBackground">@color/page_bg</item>
+        <item name="android:textColorPrimary">@color/field_text</item>
+        <item name="android:textColorSecondary">@color/muted_text</item>
+        <item name="android:colorControlActivated">@color/campus_orange</item>
+        <item name="android:colorButtonNormal">@color/panel_bg</item>
+        <item name="android:alertDialogTheme">@style/EditorialDialog</item>
+    </style>
+    <style name="EditorialDialog" parent="@android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">@color/campus_orange</item>
+        <item name="android:colorBackground">@color/page_bg</item>
+        <item name="android:textColorPrimary">@color/field_text</item>
+        <item name="android:textColorSecondary">@color/muted_text</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+    <style name="EditorialDialogNight" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/campus_orange</item>
+        <item name="android:colorBackground">#1E1E22</item>
+        <item name="android:textColorPrimary">#ECECEC</item>
+        <item name="android:textColorSecondary">#A8A8A8</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+</resources>

@@ -1,0 +1,67 @@
+{
+  "project_info": {
+    "project_number": "1066835498295",
+    "project_id": "campustrade-c5164",
+    "storage_bucket": "campustrade-c5164.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1066835498295:android:594f386694a8cc9df7b6b2",
+        "android_client_info": {
+          "package_name": "Campus.Trade"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzz4ZFqf3G4uiZtgJd-6BiPjrQwQwKgRw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1066835498295:android:a4e526e860c27dc4f7b6b2",
+        "android_client_info": {
+          "package_name": "com.campustrade.auth"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzz4ZFqf3G4uiZtgJd-6BiPjrQwQwKgRw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1066835498295:android:9278452c9d5f8535f7b6b2",
+        "android_client_info": {
+          "package_name": "com.example.campus_trade"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzz4ZFqf3G4uiZtgJd-6BiPjrQwQwKgRw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,27 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+app/build/
+.android-verification/
+*.jks
+*.keystore
+*.p12
+*.pem
+.env
+.env.*
+captures/
+.DS_Store
+.externalNativeBuild/
+.cxx/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.firebase/
+firestore-tests/node_modules/
+
+# GitHub-prepared additions
+*.apk
+*.aab
+Thumbs.db

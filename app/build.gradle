@@ -1,0 +1,76 @@
+plugins {
+    id "com.android.application"
+    id "com.google.gms.google-services"
+}
+
+// Optional live helper AI. Put the key, endpoint and model in local.properties
+// or the environment. Without them the helper uses its offline answers.
+def localProps = new Properties()
+def localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) localProps.load(new FileInputStream(localPropsFile))
+def helperKey = (localProps.getProperty("CAMPUSTRADE_HELPER_KEY")
+        ?: System.getenv("CAMPUSTRADE_HELPER_KEY") ?: "").toString()
+def helperUrl = (localProps.getProperty("CAMPUSTRADE_HELPER_URL")
+        ?: System.getenv("CAMPUSTRADE_HELPER_URL") ?: "").toString()
+def helperModel = (localProps.getProperty("CAMPUSTRADE_HELPER_MODEL")
+        ?: System.getenv("CAMPUSTRADE_HELPER_MODEL") ?: "").toString()
+def asBuildConfigString = { String value ->
+    "\"${value.replace('\\', '\\\\').replace('"', '\\"')}\""
+}
+
+android {
+    namespace "com.campustrade.auth"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.campustrade.auth"
+        minSdk 23
+        targetSdk 34
+        versionCode 6
+        versionName "1.5"
+        buildConfigField "String", "HELPER_AI_KEY", asBuildConfigString(helperKey)
+        buildConfigField "String", "HELPER_AI_URL", asBuildConfigString(helperUrl)
+        buildConfigField "String", "HELPER_AI_MODEL", asBuildConfigString(helperModel)
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        // Pure-JVM checks only. Android framework methods are not exercised by the tests.
+        unitTests.returnDefaultValues = true
+    }
+
+    buildTypes {
+        debug {
+            // Moderator passcode is read from the Gradle property
+            //   campustradeAdminPasscode=<something private>
+            // Do not commit a real passcode. Keep it in user-level Gradle properties
+            // or pass it on the command line for local assessment/demo builds.
+            def adminPasscode = (project.findProperty("campustradeAdminPasscode") ?: "").toString()
+            buildConfigField "String", "ADMIN_PASSCODE", "\"${adminPasscode.replace('\\', '\\\\').replace('"', '\\"')}\""
+        }
+        release {
+            // Admin tools never exist in release builds.
+            buildConfigField "String", "ADMIN_PASSCODE", "\"\""
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+}
+
+dependencies {
+    implementation platform('com.google.firebase:firebase-bom:33.1.2')
+    implementation 'com.google.firebase:firebase-auth'
+    implementation 'com.google.firebase:firebase-firestore'
+    implementation 'com.google.firebase:firebase-messaging'
+    implementation 'com.github.bumptech.glide:glide:4.16.0'
+
+    testImplementation 'junit:junit:4.13.2'
+}
