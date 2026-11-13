@@ -5,7 +5,7 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 ## Status
 
 - Version: 1.5
-- Platform: Android, minSdk 23, targetSdk 34
+- Platform: Android
 - Language: Java
 - Backend: Firebase Authentication and Cloud Firestore
 - Media: Cloudinary for listing photos, documents and profile photos
