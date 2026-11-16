@@ -148,7 +148,13 @@ public class Profile {
             content.addView(admin);
         }
 
-        TextView about = host.ui.bodyText("CampusTrade v1.5 - Eduvos campus marketplace", host.muted, 11);
+        settingsHeading(content, "Legal");
+        LinearLayout legal = host.ui.card(Color.WHITE, 16, 0);
+        legal.addView(settingsOption("checklist", "Terms & Conditions",
+                "Read the rules, safety and liability terms", "Read", v -> Terms.show(host)));
+        content.addView(legal);
+
+        TextView about = host.ui.bodyText("CampusTrade v1.5.2 - Eduvos campus marketplace", host.muted, 11);
         about.setGravity(Gravity.CENTER);
         about.setPadding(0, host.ui.dp(28), 0, host.ui.dp(16));
         content.addView(about);

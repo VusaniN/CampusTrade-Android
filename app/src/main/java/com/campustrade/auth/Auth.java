@@ -212,14 +212,18 @@ public class Auth {
         host.loginOptions.addView(forgot);
 
         host.signupTerms = new LinearLayout(host);
-        host.signupTerms.setGravity(Gravity.CENTER_VERTICAL);
-        host.signupTerms.setOrientation(LinearLayout.HORIZONTAL);
+        host.signupTerms.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams termsParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
         termsParams.topMargin = host.ui.dp(14);
         form.addView(host.signupTerms, termsParams);
+
+        LinearLayout termsRow = new LinearLayout(host);
+        termsRow.setGravity(Gravity.CENTER_VERTICAL);
+        termsRow.setOrientation(LinearLayout.HORIZONTAL);
+        host.signupTerms.addView(termsRow);
 
         host.termsCheck = new CheckBox(host);
         host.ui.themedToggle(host.termsCheck);
@@ -228,9 +232,15 @@ public class Auth {
         host.termsCheck.setLayoutParams(new LinearLayout.LayoutParams(host.ui.dp(48), host.ui.dp(48)));
         host.termsCheck.setClickable(true);
         host.termsCheck.setFocusable(true);
-        host.signupTerms.addView(host.termsCheck);
-        host.signupTerms.addView(host.ui.smallText("I agree to the Terms and Community rules."));
-        host.signupTerms.setOnClickListener(v -> host.termsCheck.toggle());
+        termsRow.addView(host.termsCheck);
+        termsRow.addView(host.ui.smallText("I agree to the Terms & Conditions."),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        termsRow.setOnClickListener(v -> host.termsCheck.toggle());
+
+        TextView termsLink = host.ui.linkText("Read the full Terms & Conditions");
+        termsLink.setPadding(host.ui.dp(48), 0, 0, 0);
+        termsLink.setOnClickListener(v -> Terms.show(host));
+        host.signupTerms.addView(termsLink);
 
         host.authNotice = host.ui.bodyText("Sign in with your verified Eduvos @vossie.net email. Sign-up sends a verification link; you can log in after confirming it.",
                 host.nightActive ? Color.rgb(255, 226, 168) : Color.rgb(92, 74, 30), 13);
@@ -335,7 +345,8 @@ public class Auth {
         host.signupFields.setVisibility(signup ? View.VISIBLE : View.GONE);
         host.studentNumberGroup.setVisibility(signup ? View.VISIBLE : View.GONE);
         host.confirmPasswordGroup.setVisibility(signup ? View.VISIBLE : View.GONE);
-        host.signupTerms.setVisibility(signup ? View.VISIBLE : View.GONE);
+        // The same acceptance gate applies to logging in and signing up.
+        host.signupTerms.setVisibility(View.VISIBLE);
         host.loginOptions.setVisibility(signup ? View.GONE : View.VISIBLE);
         host.adminGroup.setVisibility(View.GONE);
         host.authEmailGroup.setVisibility(View.VISIBLE);
@@ -521,6 +532,12 @@ public class Auth {
         host.adminOnlySession = false;
         host.currentStudentEmail = email;
         host.currentStudentName = fullName.trim();
+        // Keep a local record that this account accepted the current terms
+        // before entering the app. The checkbox is required on every login.
+        host.getSharedPreferences(host.PREFS + "_terms", Context.MODE_PRIVATE).edit()
+                .putLong("accepted_at:" + email, System.currentTimeMillis())
+                .putString("version:" + email, "1.5.2")
+                .apply();
         // Names are saved per email, so they survive logout.
         android.content.SharedPreferences.Editor profileEdit =
                 host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE).edit()
@@ -580,15 +597,15 @@ public class Auth {
     // Quick form check for the submit button.
     public boolean validateAuth() {
         boolean valid = isStudentEmail(host.ui.text(host.emailInput))
-                && !host.ui.text(host.passwordInput).isEmpty();
+                && !host.ui.text(host.passwordInput).isEmpty()
+                && host.termsCheck.isChecked();
         if (host.signupMode) {
             String password = host.ui.text(host.passwordInput);
             valid = valid
                     && isValidStudentNumber(host.ui.text(host.studentNumberInput))
                     && host.ui.text(host.fullNameInput).trim().length() >= 2 && !isValidStudentNumber(host.ui.text(host.fullNameInput))
                     && host.ui.isStrongPassword(password)
-                    && password.equals(host.ui.text(host.confirmPasswordInput))
-                    && host.termsCheck.isChecked();
+                    && password.equals(host.ui.text(host.confirmPasswordInput));
         }
         // Keep the button red. Show errors inline
         // instead of disabling it.
@@ -626,10 +643,10 @@ public class Auth {
                 host.confirmPasswordInput.setError("Passwords don't match");
                 valid = false;
             }
-            if (!host.termsCheck.isChecked()) {
-                Toast.makeText(host, "Tick the terms box first.", Toast.LENGTH_SHORT).show();
-                valid = false;
-            }
+        }
+        if (!host.termsCheck.isChecked()) {
+            Toast.makeText(host, "Tick the Terms & Conditions box first.", Toast.LENGTH_SHORT).show();
+            valid = false;
         }
         return valid;
     }

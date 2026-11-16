@@ -1,10 +1,10 @@
 # CampusTrade
 
-CampusTrade is a student marketplace and campus companion built with Java and Firebase. This repository contains the final v1.5.1 Android app, including buying, selling, messaging, orders, study tools, returns and moderation.
+CampusTrade is a student marketplace and campus companion built with Java and Firebase. This repository contains the final v1.5.2 Android app, including buying, selling, messaging, orders, study tools, returns and moderation.
 
 ## Status
 
-- Version: 1.5.1
+- Version: 1.5.2
 - Platform: Android
 - Language: Java
 - Backend: Firebase Authentication and Cloud Firestore
@@ -66,6 +66,8 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 
 ### Safety and moderation
 
+- Terms & Conditions acceptance required before login, with the full text available in Settings
+- Clear liability and safe-exchange terms covering trades and meetings outside the application
 - Listing, user and review reports with reasons and details
 - Firestore-synced wanted posts and study-group posts
 - Block and unblock students; blocked students are hidden from Marketplace and Inbox
