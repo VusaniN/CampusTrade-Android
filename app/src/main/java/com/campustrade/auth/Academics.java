@@ -533,15 +533,23 @@ public class Academics {
         share.setOnClickListener(v -> {
             String id = groups.get(group.getSelectedItemPosition()).id;
             try {
-                host.featureStore.update(f -> f.postActivity(id, host.currentStudentEmail, item.kind, item.title,
-                        item.detail, item.due, item.end, item.location, System.currentTimeMillis()));
+                final CampusFeatures.GroupPost[] created = {null};
+                host.featureStore.update(f -> {
+                    created[0] = f.postActivity(id, host.currentStudentEmail, item.kind, item.title,
+                            item.detail, item.due, item.end, item.location, System.currentTimeMillis());
+                    if (created[0] != null) created[0].authorName = host.currentStudentName;
+                });
+                if (created[0] != null) host.community.cloudSaveGroupPost(id, created[0]);
                 sheet.dismiss();
                 CampusFeatures.Group shared = host.featureStore.data.group(id);
                 for (String member : shared.members) if (!member.equals(host.currentStudentEmail)) {
                     host.notification.addNotification(member, shared.name + " · shared " + item.kind.toLowerCase(Locale.ROOT),
                             item.title, "groups", "");
                 }
+                // Show the group feed so the shared note is visible immediately,
+                // not only after the student navigates back to Groups.
                 host.showAppScreen("Academics");
+                host.community.showGroup(id);
             } catch (RuntimeException e) {
                 host.ui.showSimpleMessage("Couldn't share", e.getMessage());
             }

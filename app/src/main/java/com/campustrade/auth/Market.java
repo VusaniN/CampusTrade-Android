@@ -1262,16 +1262,22 @@ public class Market {
         });
     }
 
-    public void buildOffers(LinearLayout content) {
+    boolean refreshOffers(Runnable after) {
         long now = System.currentTimeMillis();
-        if (!offersPulling && now - lastOffersPullAt > 8000) {
-            offersPulling = true;
-            lastOffersPullAt = now;
-            cloudPullOffers(() -> {
-                offersPulling = false;
-                if (host.currentTab.equals("Offers")) host.showAppScreen("Offers");
-            });
-        }
+        if (offersPulling || now - lastOffersPullAt <= 8000) return false;
+        offersPulling = true;
+        lastOffersPullAt = now;
+        cloudPullOffers(() -> {
+            offersPulling = false;
+            if (after != null) after.run();
+        });
+        return true;
+    }
+
+    public void buildOffers(LinearLayout content) {
+        refreshOffers(() -> {
+            if (host.currentTab.equals("Offers")) host.showAppScreen("Offers");
+        });
         int count = 0;
         for (int i = host.featureStore.data.offers.size() - 1; i >= 0; i--) {
             CampusFeatures.Offer o = host.featureStore.data.offers.get(i);

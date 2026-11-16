@@ -1,10 +1,10 @@
 # CampusTrade
 
-CampusTrade is a student marketplace and campus companion built with Java and Firebase. This repository contains the final v1.5 Android app, including buying, selling, messaging, orders, study tools and moderation.
+CampusTrade is a student marketplace and campus companion built with Java and Firebase. This repository contains the final v1.5.1 Android app, including buying, selling, messaging, orders, study tools, returns and moderation.
 
 ## Status
 
-- Version: 1.5
+- Version: 1.5.1
 - Platform: Android
 - Language: Java
 - Backend: Firebase Authentication and Cloud Firestore
@@ -52,13 +52,22 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Payment preference limited to cash on collection or EFT arranged directly between students
 - No online card, instant-EFT, checkout or payout processing
 - Completed-order reviews with one review per student per order
+- Completed-order return requests: reason, seller approval or decline, buyer withdrawal and return status
+- Return settlements are arranged directly between students; CampusTrade does not process refunds
 - Report an abusive or fake review from a seller profile
 - Real-time order and chat listeners when the app is open
+
+### Study groups
+
+- Searchable public and private study groups, with name/module discovery and Firestore refresh on search
+- Private group join requests synced to Firestore for owner approval
+- Group notes shared from Home or Study hub, with the group feed opening after sharing
+- Members-only group feeds, deadlines and notifications
 
 ### Safety and moderation
 
 - Listing, user and review reports with reasons and details
-- Firestore-synced wanted posts and public study-group posts
+- Firestore-synced wanted posts and study-group posts
 - Block and unblock students; blocked students are hidden from Marketplace and Inbox
 - Searchable admin moderation queue and report actions
 - Student feedback shown as named cards with category, date and message instead of backend IDs

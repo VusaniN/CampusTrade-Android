@@ -289,6 +289,11 @@ public class Order {
             String cloudOutcome = doc.getString("cancellationOutcome") == null ? "" : doc.getString("cancellationOutcome");
             Long cancellationTime = doc.getLong("cancellationTime");
             long cloudTime = cancellationTime == null ? 0 : cancellationTime;
+            String cloudReturnRequester = doc.getString("returnRequester") == null ? "" : doc.getString("returnRequester");
+            String cloudReturnReason = doc.getString("returnReason") == null ? "" : doc.getString("returnReason");
+            String cloudReturnOutcome = doc.getString("returnOutcome") == null ? "" : doc.getString("returnOutcome");
+            Long returnTime = doc.getLong("returnTime");
+            long cloudReturnTime = returnTime == null ? 0 : returnTime;
             Long payoutTime = doc.getLong("payoutRequestedAt");
             long cloudPayout = payoutTime == null ? 0 : payoutTime;
             String cloudPayoutMethod = doc.getString("payoutMethod");
@@ -302,8 +307,12 @@ public class Order {
                     || !order.cancellationReason.equals(cloudReason)
                     || !order.cancellationOutcome.equals(cloudOutcome)
                     || order.cancellationTime != cloudTime;
+            boolean returnChanged = !order.returnRequester.equals(cloudReturnRequester)
+                    || !order.returnReason.equals(cloudReturnReason)
+                    || !order.returnOutcome.equals(cloudReturnOutcome)
+                    || order.returnTime != cloudReturnTime;
             // Only update local orders that actually changed.
-            if (!statusChanged && !requestChanged && !payoutChanged) return;
+            if (!statusChanged && !requestChanged && !returnChanged && !payoutChanged) return;
             // Requests only move forward; an old read must not undo a local decision.
             if (order.status.equals(MainActivity.TransactionRecord.HELD) && cloudStatus.equals(MainActivity.TransactionRecord.REQUESTED)) return;
             if (order.status.equals(MainActivity.TransactionRecord.COMPLETED) && !cloudStatus.equals(MainActivity.TransactionRecord.COMPLETED)) return;
@@ -314,6 +323,10 @@ public class Order {
             order.cancellationReason = cloudReason;
             order.cancellationOutcome = cloudOutcome;
             order.cancellationTime = cloudTime;
+            order.returnRequester = cloudReturnRequester;
+            order.returnReason = cloudReturnReason;
+            order.returnOutcome = cloudReturnOutcome;
+            order.returnTime = cloudReturnTime;
             if (cloudPayout > 0) {
                 order.payoutRequestedAt = cloudPayout;
                 if (cloudPayoutMethod != null && !cloudPayoutMethod.isEmpty()) order.payoutMethod = cloudPayoutMethod;
@@ -323,6 +336,8 @@ public class Order {
             if (statusChanged) {
                 syncListingFor(order);
                 notifyOrderChange(order, oldStatus);
+            } else if (returnChanged) {
+                notifyReturnFieldChange(order);
             } else if (requestChanged) {
                 notifyCancellationFieldChange(order);
             }
@@ -382,6 +397,11 @@ public class Order {
         record.cancellationOutcome = doc.getString("cancellationOutcome") == null ? "" : doc.getString("cancellationOutcome");
         Long pulledCancellationTime = doc.getLong("cancellationTime");
         record.cancellationTime = pulledCancellationTime == null ? 0 : pulledCancellationTime;
+        record.returnRequester = doc.getString("returnRequester") == null ? "" : doc.getString("returnRequester");
+        record.returnReason = doc.getString("returnReason") == null ? "" : doc.getString("returnReason");
+        record.returnOutcome = doc.getString("returnOutcome") == null ? "" : doc.getString("returnOutcome");
+        Long pulledReturnTime = doc.getLong("returnTime");
+        record.returnTime = pulledReturnTime == null ? 0 : pulledReturnTime;
         Long pulledPayoutAt = doc.getLong("payoutRequestedAt");
         record.payoutRequestedAt = pulledPayoutAt == null ? 0 : pulledPayoutAt;
         if (doc.getString("payoutMethod") != null) record.payoutMethod = doc.getString("payoutMethod");
@@ -506,6 +526,25 @@ public class Order {
         host.notification.showCampusNotification(title, body, "payment");
     }
 
+    /** Tell the other student about a return request or decision. */
+    public void notifyReturnFieldChange(MainActivity.TransactionRecord order) {
+        String title;
+        if (order.returnPending() && !order.returnRequester.equalsIgnoreCase(host.currentStudentEmail)) {
+            title = "Return requested";
+        } else if ("Approved".equals(order.returnOutcome)) {
+            title = "Return approved";
+        } else if ("Declined".equals(order.returnOutcome)) {
+            title = "Return declined";
+        } else if ("Withdrawn".equals(order.returnOutcome)) {
+            title = "Return request withdrawn";
+        } else {
+            return;
+        }
+        String body = order.itemTitle;
+        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "");
+        host.notification.showCampusNotification(title, body, "payment");
+    }
+
     // Unknown cloud statuses fall back to HELD instead of breaking the list.
     public static String localOrderStatus(String cloud) {
         if (cloud == null) return MainActivity.TransactionRecord.HELD;
@@ -610,6 +649,14 @@ public class Order {
             update.put("cancellationReason", order.cancellationReason);
             update.put("cancellationOutcome", order.cancellationOutcome);
             update.put("cancellationTime", order.cancellationTime);
+        }
+        // Return fields are separate from the order status; the sale remains
+        // completed while the two students resolve the return.
+        if (order.returnTime > 0 || !order.returnOutcome.isEmpty()) {
+            update.put("returnRequester", order.returnRequester);
+            update.put("returnReason", order.returnReason);
+            update.put("returnOutcome", order.returnOutcome);
+            update.put("returnTime", order.returnTime);
         }
         // Sync payout details only when a request exists.
         if (order.payoutRequestedAt > 0) {
@@ -1034,12 +1081,15 @@ public class Order {
     // Save a change, sync it, and undo it if saving fails.
     public boolean saveOrderChange(MainActivity.TransactionRecord order, OrderChange change) {
         String oldStatus = order.status, oldRequester = order.cancellationRequester, oldReason = order.cancellationReason, oldOutcome = order.cancellationOutcome;
+        String oldReturnRequester = order.returnRequester, oldReturnReason = order.returnReason, oldReturnOutcome = order.returnOutcome;
         String oldPayoutMethod = order.payoutMethod, oldPayoutSchedule = order.payoutSchedule;
-        long oldTime = order.cancellationTime, oldPayout = order.payoutRequestedAt;
+        long oldTime = order.cancellationTime, oldReturnTime = order.returnTime, oldPayout = order.payoutRequestedAt;
         if (!change.apply()) { host.ui.showSimpleMessage("Order unchanged", "That action isn't available for this order."); return false; }
         if (!saveTransactions()) {
             order.status = oldStatus; order.cancellationRequester = oldRequester; order.cancellationReason = oldReason;
             order.cancellationOutcome = oldOutcome; order.cancellationTime = oldTime; order.payoutRequestedAt = oldPayout;
+            order.returnRequester = oldReturnRequester; order.returnReason = oldReturnReason;
+            order.returnOutcome = oldReturnOutcome; order.returnTime = oldReturnTime;
             order.payoutMethod = oldPayoutMethod; order.payoutSchedule = oldPayoutSchedule;
             host.ui.showSimpleMessage("Couldn't save", "The order wasn't changed. Give it another go."); return false;
         }
@@ -1181,6 +1231,122 @@ public class Order {
             body.addView(host.ui.bodyText("The order stays active until the other student approves.", host.muted, 11));
         }
         sheetRef[0] = host.ui.showBottomSheet("Cancellation", body);
+    }
+
+    // Buyer asks to return a completed order; the seller approves or declines.
+    public void showReturnCenter(MainActivity.TransactionRecord order) {
+        if (order == null) return;
+        boolean buyer = order.isBuyer(host.currentStudentEmail);
+        boolean seller = order.isSeller(host.currentStudentEmail);
+        if (!buyer && !seller) return;
+        final Dialog[] sheetRef = {null};
+        LinearLayout body = new LinearLayout(host);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, host.ui.dp(4), 0, 0);
+        body.addView(host.ui.bodyText("Returns are arranged directly between the two students. CampusTrade does not process refunds.",
+                host.muted, 12));
+
+        if (order.returnPending()) {
+            body.addView(host.ui.bodyText("Requested by " + host.studentName(order.returnRequester), host.text, 13));
+            body.addView(host.ui.bodyText(order.returnReason, host.muted, 12));
+            if (order.returnTime > 0) {
+                body.addView(host.ui.bodyText(host.messageTime(order.returnTime), host.muted, 11));
+            }
+            if (buyer) {
+                Button withdraw = host.ui.primaryButton("Withdraw return request");
+                withdraw.setOnClickListener(v -> {
+                    if (saveOrderChange(order, () -> order.withdrawReturn(host.currentStudentEmail, System.currentTimeMillis()))) {
+                        if (sheetRef[0] != null) sheetRef[0].dismiss();
+                        host.notification.addNotification(order.sellerEmail, "Return request withdrawn",
+                                order.itemTitle, "payment", "");
+                        host.notification.showCampusNotification("Return request withdrawn",
+                                "The order remains completed.", "payment");
+                    }
+                });
+                body.addView(withdraw, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48)));
+            } else {
+                Button approve = host.ui.primaryButton("Approve return");
+                approve.setOnClickListener(v -> {
+                    if (saveOrderChange(order, () -> order.resolveReturn(host.currentStudentEmail, true, System.currentTimeMillis()))) {
+                        if (sheetRef[0] != null) sheetRef[0].dismiss();
+                        host.notification.addNotification(order.buyerEmail, "Return approved",
+                                order.itemTitle + " · the seller approved the return.", "payment", "");
+                        host.notification.showCampusNotification("Return approved",
+                                "Arrange the handover with the buyer.", "payment");
+                    }
+                });
+                body.addView(approve, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48)));
+                Button decline = host.ui.secondaryButton("Decline return");
+                LinearLayout.LayoutParams declineParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
+                declineParams.topMargin = host.ui.dp(8);
+                decline.setOnClickListener(v -> {
+                    if (saveOrderChange(order, () -> order.resolveReturn(host.currentStudentEmail, false, System.currentTimeMillis()))) {
+                        if (sheetRef[0] != null) sheetRef[0].dismiss();
+                        host.notification.addNotification(order.buyerEmail, "Return declined",
+                                order.itemTitle + " · the seller declined the return.", "payment", "");
+                        host.notification.showCampusNotification("Return declined",
+                                "The order remains completed.", "payment");
+                    }
+                });
+                body.addView(decline, declineParams);
+            }
+        } else if (!order.returnOutcome.isEmpty()) {
+            body.addView(host.ui.bodyText("Return " + order.returnOutcome.toLowerCase(Locale.ROOT), host.text, 14));
+            if (!order.returnReason.isEmpty()) body.addView(host.ui.bodyText(order.returnReason, host.muted, 12));
+            if (order.returnTime > 0) body.addView(host.ui.bodyText(host.messageTime(order.returnTime), host.muted, 11));
+        } else if (order.status.equals(MainActivity.TransactionRecord.COMPLETED) && buyer) {
+            body.addView(host.ui.bodyText("Tell the seller why you want to return this item.", host.muted, 12));
+            final String[] reason = {"Item not as described"};
+            final String[] reasons = {"Item not as described", "Item damaged", "Wrong item", "Changed my mind", "Other"};
+            LinearLayout chips = new LinearLayout(host);
+            chips.setOrientation(LinearLayout.VERTICAL);
+            for (String option : reasons) {
+                TextView chip = host.ui.chip(option,
+                        option.equals(reason[0]) ? host.blue : host.surface(),
+                        option.equals(reason[0]) ? Color.WHITE : host.text);
+                chip.setPadding(host.ui.dp(10), host.ui.dp(8), host.ui.dp(10), host.ui.dp(8));
+                chip.setBackground(option.equals(reason[0]) ? host.ui.round(host.blue, 999)
+                        : host.ui.strokedRound(host.surface(), 999, host.border));
+                chip.setOnClickListener(v -> {
+                    reason[0] = option;
+                    for (int i = 0; i < chips.getChildCount(); i++) {
+                        TextView item = (TextView) chips.getChildAt(i);
+                        boolean active = item.getText().toString().equals(option);
+                        item.setBackground(active ? host.ui.round(host.blue, 999)
+                                : host.ui.strokedRound(host.surface(), 999, host.border));
+                        item.setTextColor(active ? Color.WHITE : host.text);
+                    }
+                });
+                LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(42));
+                chipParams.topMargin = host.ui.dp(6);
+                chips.addView(chip, chipParams);
+            }
+            body.addView(chips);
+            EditText details = host.ui.listingField(body, "Details (optional)", "Add context for the seller",
+                    InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+            details.setSingleLine(false);
+            details.setMinLines(2);
+            details.setFilters(new InputFilter[] {new InputFilter.LengthFilter(450)});
+            Button send = host.ui.primaryButton("Send return request");
+            LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
+            sendParams.topMargin = host.ui.dp(12);
+            send.setOnClickListener(v -> {
+                String explanation = reason[0] + (host.ui.text(details).trim().isEmpty() ? "" : " / " + host.ui.text(details).trim());
+                if (saveOrderChange(order, () -> order.requestReturn(host.currentStudentEmail, explanation, System.currentTimeMillis()))) {
+                    if (sheetRef[0] != null) sheetRef[0].dismiss();
+                    host.notification.addNotification(order.sellerEmail, "Return requested",
+                            order.itemTitle + " · " + explanation, "payment", "");
+                    host.notification.showCampusNotification("Return request sent",
+                            "Waiting for the seller's decision.", "payment");
+                }
+            });
+            body.addView(send, sendParams);
+        } else {
+            body.addView(host.ui.emptyState("flag", "Return unavailable",
+                    "Only the buyer can request a return after collection."));
+        }
+        sheetRef[0] = host.ui.showBottomSheet("Return", body);
     }
 
     private void showCancellationOrderPicker() {
@@ -1650,6 +1816,9 @@ public class Order {
         } else if (buyer && order.status.equals(MainActivity.TransactionRecord.HELD) && !order.cancellationPending()) {
             primary.setText("Confirm collection");
             primary.setOnClickListener(v -> confirmCollection(order, page));
+        } else if (order.returnPending()) {
+            primary.setText(buyer ? "Return status" : "Review return");
+            primary.setOnClickListener(v -> showReturnCenter(order));
         } else if (needsBuyerReview(order)) {
             primary.setText("Leave review");
             primary.setOnClickListener(v -> { page.dismiss(); reviewOrder(order); });
@@ -1819,6 +1988,21 @@ public class Order {
                     new SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(new Date(order.cancellationTime)), host.muted, 11));
             content.addView(cancel);
         }
+        if (order.returnPending() || !order.returnOutcome.isEmpty()) {
+            content.addView(orderSectionTitle("Return"));
+            int tint = host.nightActive ? Color.rgb(38, 48, 60) : Color.rgb(235, 243, 252);
+            int border = host.nightActive ? Color.rgb(59, 78, 98) : Color.rgb(194, 214, 238);
+            LinearLayout returnCard = host.ui.card(tint, 14, host.ui.dp(14));
+            returnCard.setBackground(host.ui.strokedRound(tint, 14, border));
+            String returnTitle = order.returnPending() ? "Return requested" : order.returnOutcome;
+            returnCard.addView(host.ui.titleText(returnTitle, host.text, 14));
+            if (!order.returnReason.isEmpty()) returnCard.addView(host.ui.bodyText(order.returnReason, host.muted, 12));
+            if (order.returnTime > 0) returnCard.addView(host.ui.bodyText(
+                    new SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(new Date(order.returnTime)), host.muted, 11));
+            returnCard.addView(host.ui.bodyText("Returns are arranged directly between the buyer and seller. CampusTrade does not process refunds.",
+                    host.muted, 11));
+            content.addView(returnCard);
+        }
         return content;
     }
 
@@ -1959,6 +2143,25 @@ public class Order {
                 page.dismiss();
                 reviewOrder(order);
             });
+        }
+        if (order.status.equals(MainActivity.TransactionRecord.COMPLETED)) {
+            if (buyer && order.returnOutcome.isEmpty()) {
+                addOrderAction(body, "flag", "Request return", "Ask the seller to take the item back", v -> {
+                    if (sheetRef[0] != null) sheetRef[0].dismiss();
+                    showReturnCenter(order);
+                });
+            } else if (order.returnPending()) {
+                addOrderAction(body, "flag", buyer ? "Return status" : "Review return request",
+                        buyer ? "See the seller's decision" : "Approve or decline the return", v -> {
+                            if (sheetRef[0] != null) sheetRef[0].dismiss();
+                            showReturnCenter(order);
+                        });
+            } else if (!order.returnOutcome.isEmpty()) {
+                addOrderAction(body, "flag", "Return status", "View the return outcome", v -> {
+                    if (sheetRef[0] != null) sheetRef[0].dismiss();
+                    showReturnCenter(order);
+                });
+            }
         }
         if (!buyer) {
             addOrderAction(body, "payment", "Collection arrangements", "How cash and EFT are settled", v -> {
@@ -2120,6 +2323,10 @@ public class Order {
                     order.cancellationReason = record.optString("cancellationReason", "");
                     order.cancellationOutcome = record.optString("cancellationOutcome", "");
                     order.cancellationTime = record.optLong("cancellationTime", 0);
+                    order.returnRequester = record.optString("returnRequester", "");
+                    order.returnReason = record.optString("returnReason", "");
+                    order.returnOutcome = record.optString("returnOutcome", "");
+                    order.returnTime = record.optLong("returnTime", 0);
                     order.payoutRequestedAt = record.optLong("payoutRequestedAt", 0);
                     order.payoutMethod = record.optString("payoutMethod", "Bank transfer");
                     order.payoutSchedule = record.optString("payoutSchedule", "On request");
@@ -2171,7 +2378,10 @@ public class Order {
                     .put("reference", order.reference).put("date", order.paidAt).put("seller", order.sellerEmail)
                     .put("sellerName", order.sellerName).put("buyer", order.buyerEmail).put("category", order.category).put("status", order.status).put("productId", order.productId)
                     .put("cancellationRequester", order.cancellationRequester).put("cancellationReason", order.cancellationReason)
-                    .put("cancellationOutcome", order.cancellationOutcome).put("cancellationTime", order.cancellationTime).put("payoutRequestedAt", order.payoutRequestedAt)
+                    .put("cancellationOutcome", order.cancellationOutcome).put("cancellationTime", order.cancellationTime)
+                    .put("returnRequester", order.returnRequester).put("returnReason", order.returnReason)
+                    .put("returnOutcome", order.returnOutcome).put("returnTime", order.returnTime)
+                    .put("payoutRequestedAt", order.payoutRequestedAt)
                     .put("payoutMethod", order.payoutMethod).put("payoutSchedule", order.payoutSchedule)
                     .put("createdTime", order.createdMillis()));
         } catch (org.json.JSONException e) { return false; }

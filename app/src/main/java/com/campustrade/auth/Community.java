@@ -34,6 +34,9 @@ public class Community {
     private final MainActivity host;
     private boolean groupsPulling = false;
     private long lastGroupsPullAt = 0;
+    private boolean groupSearchRefreshing = false;
+    private String lastGroupSearchPullTerm = "";
+    private long lastGroupSearchPullAt = 0L;
     private final java.util.Set<String> groupPostsPulling = new java.util.HashSet<>();
     private final java.util.Map<String, Long> groupPostsPullAt = new java.util.HashMap<>();
     private boolean wantedPulling = false;
@@ -46,12 +49,9 @@ public class Community {
 
     // Build Groups and refresh from Firebase at most every few seconds.
     public void buildGroups(LinearLayout content) {
-        if (!groupsPulling && System.currentTimeMillis() - lastGroupsPullAt > 8000) {
-            lastGroupsPullAt = System.currentTimeMillis();
-            cloudPullGroups(() -> {
-                if (host.currentTab.equals("Groups")) host.showAppScreen("Groups");
-            });
-        }
+        cloudPullGroups(false, () -> {
+            if (host.currentTab.equals("Groups")) host.showAppScreen("Groups");
+        });
         Button create = host.ui.primaryButton("Create study group"); create.setOnClickListener(v -> createStudyGroup()); content.addView(create);
         EditText search = host.ui.input("Search groups or modules", InputType.TYPE_CLASS_TEXT); content.addView(search);
         LinearLayout rows = new LinearLayout(host); rows.setOrientation(LinearLayout.VERTICAL); content.addView(rows);
@@ -64,6 +64,7 @@ public class Community {
         suggestionsSection.addView(suggScroll);
         content.addView(suggestionsSection);
         // Redraws the list on each keystroke and hides suggestions while searching.
+        final Runnable[] renderRef = new Runnable[1];
         Runnable render = () -> {
             rows.removeAllViews();
             int shownGroups = 0;
@@ -114,10 +115,26 @@ public class Community {
             if (shownGroups == 0) {
                 rows.addView(host.ui.emptyState("team", term.isEmpty() ? "No study groups yet" : "No groups match",
                         term.isEmpty() ? "Create a group for your module and invite classmates."
-                                : "Try another module or group name."));
+                                : "Try another module or group name, or refresh from your campus."));
+                if (term.length() >= 2 && !groupSearchRefreshing) {
+                    long now = System.currentTimeMillis();
+                    if (!term.equals(lastGroupSearchPullTerm) || now - lastGroupSearchPullAt > 6000) {
+                        groupSearchRefreshing = true;
+                        lastGroupSearchPullTerm = term;
+                        lastGroupSearchPullAt = now;
+                        boolean started = cloudPullGroups(true, () -> {
+                            groupSearchRefreshing = false;
+                            if (host.currentTab.equals("Groups") && renderRef[0] != null) {
+                                renderRef[0].run();
+                            }
+                        });
+                        if (!started) groupSearchRefreshing = false;
+                    }
+                }
             }
             suggestionsSection.setVisibility(term.isEmpty() ? View.VISIBLE : View.GONE);
         };
+        renderRef[0] = render;
         search.addTextChangedListener(new MainActivity.SimpleWatcher() { @Override public void afterTextChanged(Editable s) { render.run(); } }); render.run();
         loadSuggestions(suggRow);
     }
@@ -368,7 +385,16 @@ public class Community {
 
     private static final class CloudGroup {
         String id, name, module, description, owner;
+        boolean privateGroup;
         final java.util.LinkedHashSet<String> members = new java.util.LinkedHashSet<>();
+        final java.util.LinkedHashSet<String> requests = new java.util.LinkedHashSet<>();
+    }
+
+    private String groupMemberEmail(String uid) {
+        if (uid == null || uid.isEmpty()) return "";
+        if (uid.equals(host.currentUid)) return host.currentStudentEmail;
+        String email = CloudSync.emailForUid(host, uid);
+        return email == null || email.isEmpty() ? uid : email;
     }
 
     // The creator joins first so the group is never empty.
@@ -393,14 +419,14 @@ public class Community {
                 .addOnFailureListener(e -> android.util.Log.w("CampusTrade", "group create failed: " + e.getMessage()));
     }
 
-    // Public groups join now; private groups need approval.
+    // Public groups join now; private groups add the student to requests.
     private void cloudJoinGroup(CampusFeatures.Group g) {
-        if (g.privateGroup) return;
         String uid = CloudSync.uid(host);
         if (uid.isEmpty()) return;
+        String field = g.privateGroup ? "requests" : "members";
         com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 .collection("studyGroups").document(g.id)
-                .update("members", com.google.firebase.firestore.FieldValue.arrayUnion(uid))
+                .update(field, com.google.firebase.firestore.FieldValue.arrayUnion(uid))
                 .addOnFailureListener(e -> android.util.Log.w("CampusTrade", "group join failed: " + e.getMessage()));
     }
 
@@ -428,7 +454,7 @@ public class Community {
     }
 
     /** Copy a group post so every member sees it. */
-    private void cloudSaveGroupPost(String groupId, CampusFeatures.GroupPost post) {
+    void cloudSaveGroupPost(String groupId, CampusFeatures.GroupPost post) {
         String uid = CloudSync.uid(host);
         if (uid.isEmpty() || post == null) return;
         java.util.Map<String, Object> doc = new java.util.HashMap<>();
@@ -511,15 +537,15 @@ public class Community {
         }
     }
 
-    // Load public groups and update the saved list.
-    private void cloudPullGroups(Runnable after) {
-        if (groupsPulling) {
-            if (after != null) after.run();
-            return;
-        }
+    // Load campus groups and update the saved list. A searched term can force
+    // an immediate refresh so a group created on another device appears.
+    private boolean cloudPullGroups(boolean force, Runnable after) {
+        long now = System.currentTimeMillis();
+        if (groupsPulling || (!force && now - lastGroupsPullAt <= 8000)) return false;
+        lastGroupsPullAt = now;
         groupsPulling = true;
         com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                .collection("studyGroups").whereEqualTo("private", false).limit(100).get()
+                .collection("studyGroups").limit(100).get()
                 .addOnSuccessListener(snap -> {
                     groupsPulling = false;
                     if (host.isDestroyed() || host.isFinishing()) return;
@@ -531,20 +557,23 @@ public class Community {
                         c.module = d.getString("module") == null ? "" : d.getString("module");
                         c.description = d.getString("description") == null ? "" : d.getString("description");
                         c.owner = d.getString("creatorEmail") == null ? "" : d.getString("creatorEmail");
+                        c.privateGroup = Boolean.TRUE.equals(d.getBoolean("private"));
                         java.util.List<String> uids = (java.util.List<String>) d.get("members");
                         if (uids != null) {
                             for (String uid : uids) {
                                 if (uid == null || uid.isEmpty()) continue;
-                                if (uid.equals(host.currentUid)) c.members.add(host.currentStudentEmail);
-                                else {
-                                    String email = CloudSync.emailForUid(host, uid);
-                                    c.members.add(email == null || email.isEmpty() ? uid : email);
-                                }
+                                c.members.add(groupMemberEmail(uid));
+                            }
+                        }
+                        java.util.List<String> requested = (java.util.List<String>) d.get("requests");
+                        if (requested != null) {
+                            for (String uid : requested) {
+                                if (uid == null || uid.isEmpty()) continue;
+                                c.requests.add(groupMemberEmail(uid));
                             }
                         }
                         incoming.add(c);
                     }
-                    boolean[] changed = {false};
                     try {
                         host.featureStore.update(f -> {
                             for (CloudGroup c : incoming) {
@@ -556,35 +585,39 @@ public class Community {
                                     target = new CampusFeatures.Group();
                                     target.id = c.id;
                                     f.groups.add(target);
-                                    changed[0] = true;
                                 }
                                 if (!java.util.Objects.equals(target.name, c.name)
                                         || !java.util.Objects.equals(target.module, c.module)
                                         || !java.util.Objects.equals(target.description, c.description)
                                         || !java.util.Objects.equals(target.owner, c.owner)
-                                        || target.privateGroup
-                                        || !target.members.equals(c.members)) {
+                                        || target.privateGroup != c.privateGroup
+                                        || !target.members.equals(c.members)
+                                        || !target.requests.equals(c.requests)) {
                                     target.name = c.name;
                                     target.module = c.module;
                                     target.description = c.description;
                                     target.owner = c.owner;
-                                    target.privateGroup = false;
+                                    target.privateGroup = c.privateGroup;
                                     target.members.clear();
                                     target.members.addAll(c.members);
-                                    changed[0] = true;
+                                    target.requests.clear();
+                                    target.requests.addAll(c.requests);
                                 }
                             }
                         });
                     } catch (RuntimeException e) {
                         android.util.Log.w("CampusTrade", "group merge failed: " + e.getMessage());
                     }
-                    // Only redraw if something changed.
-                    if (changed[0] && after != null) after.run();
+                    // Always let the caller redraw; a search refresh needs the
+                    // empty state to clear even when no new group was found.
+                    if (after != null) after.run();
                 })
                 .addOnFailureListener(e -> {
                     groupsPulling = false;
                     android.util.Log.w("CampusTrade", "group pull failed: " + e.getMessage());
+                    if (after != null) after.run();
                 });
+        return true;
     }
 
     // Add joined groups to Inbox; unread means posts not seen yet.
@@ -737,11 +770,11 @@ public class Community {
             }
             try {
                 host.featureStore.update(f -> f.join(id, host.currentStudentEmail));
+                cloudJoinGroup(g);
                 if (g.privateGroup) {
                     host.notification.addNotification(g.owner, "Group membership request",
                             host.studentName(host.currentStudentEmail) + " requested to join " + g.name, "groups", "");
                 } else {
-                    cloudJoinGroup(g);
                     host.inbox.localMessage(g.owner, host.studentName(host.currentStudentEmail)
                             + " joined your study group \"" + g.name + "\".");
                 }

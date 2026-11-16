@@ -130,9 +130,15 @@ public class Home {
         int available = 0;
         for (MainActivity.Product product : host.products) if (host.market.publicListing(product)) available++;
         int offersToAnswer = 0;
+        int openOffers = 0;
+        long now = System.currentTimeMillis();
         for (CampusFeatures.Offer offer : host.featureStore.data.offers) {
-            if (offer.seller.equals(host.currentStudentEmail) && offer.pending()
-                    && offer.turn.equals(host.currentStudentEmail)) offersToAnswer++;
+            boolean buyer = offer.buyer.equals(host.currentStudentEmail);
+            boolean seller = offer.seller.equals(host.currentStudentEmail);
+            if (!buyer && !seller) continue;
+            boolean open = offer.pending() || (offer.state.equals("Accepted") && offer.expires > now);
+            if (open) openOffers++;
+            if (seller && offer.pending() && offer.turn.equals(host.currentStudentEmail)) offersToAnswer++;
         }
         LinearLayout counts = host.ui.horizontal();
         counts.setPadding(0, host.ui.dp(14), 0, 0);
@@ -142,9 +148,15 @@ public class Home {
         counts.addView(countTile(String.valueOf(unread), "Unread", v -> host.showAppScreen("Inbox")),
                 new LinearLayout.LayoutParams(0, host.ui.dp(78), 1));
         counts.addView(host.ui.space(host.ui.dp(8), 1));
-        counts.addView(countTile(String.valueOf(offersToAnswer), "Offers", v -> host.showAppScreen("Offers")),
+        counts.addView(countTile(String.valueOf(openOffers), "Offers", v -> host.showAppScreen("Offers")),
                 new LinearLayout.LayoutParams(0, host.ui.dp(78), 1));
         content.addView(counts);
+        host.market.refreshOffers(() -> {
+            if (!host.isDestroyed() && !host.isFinishing()) {
+                if (host.currentTab.equals("Home")) host.showAppScreen("Home");
+                else if (host.currentTab.equals("Offers")) host.showAppScreen("Offers");
+            }
+        });
 
         content.addView(host.ui.sectionHeading("Campus pulse", ""));
         LinearLayout pulse = host.ui.card(Color.WHITE, 16, host.ui.dp(12));

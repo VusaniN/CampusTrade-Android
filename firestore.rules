@@ -195,6 +195,15 @@ service cloud.firestore {
           && request.resource.data.cancellationTime > 0;
       }
 
+      function returnFieldsSet() {
+        return request.resource.data.returnRequester is string
+          && request.resource.data.returnReason is string
+          && request.resource.data.returnReason.size() <= 500
+          && request.resource.data.returnOutcome is string
+          && request.resource.data.returnTime is number
+          && request.resource.data.returnTime > 0;
+      }
+
       allow read: if signedIn()
         && (resource.data.buyerId == request.auth.uid
           || resource.data.sellerId == request.auth.uid
@@ -334,6 +343,41 @@ service cloud.firestore {
             && changedOnly(['status', 'cancellationRequester', 'cancellationReason',
                             'cancellationOutcome', 'cancellationTime', 'updatedAt']))
           ||
+          // Buyer requests a return after collection. The sale remains COMPLETED.
+          (resource.data.status == 'COMPLETED'
+            && request.resource.data.status == 'COMPLETED'
+            && request.auth.uid == resource.data.buyerId
+            && resource.data.get('returnOutcome', '') == ''
+            && returnFieldsSet()
+            && request.resource.data.returnRequester == request.auth.token.email.lower()
+            && request.resource.data.returnOutcome == 'Requested'
+            && changedOnly(['status', 'returnRequester', 'returnReason',
+                            'returnOutcome', 'returnTime', 'updatedAt']))
+          ||
+          // Seller approves or declines the return request.
+          (resource.data.status == 'COMPLETED'
+            && request.resource.data.status == 'COMPLETED'
+            && request.auth.uid == resource.data.sellerId
+            && resource.data.get('returnOutcome', '') == 'Requested'
+            && resource.data.get('returnRequester', '') != ''
+            && returnFieldsSet()
+            && request.resource.data.returnRequester == ''
+            && request.resource.data.returnOutcome in ['Approved', 'Declined']
+            && changedOnly(['status', 'returnRequester', 'returnReason',
+                            'returnOutcome', 'returnTime', 'updatedAt']))
+          ||
+          // Buyer withdraws their own return request.
+          (resource.data.status == 'COMPLETED'
+            && request.resource.data.status == 'COMPLETED'
+            && request.auth.uid == resource.data.buyerId
+            && resource.data.get('returnOutcome', '') == 'Requested'
+            && resource.data.get('returnRequester', '') == request.auth.token.email.lower()
+            && returnFieldsSet()
+            && request.resource.data.returnRequester == ''
+            && request.resource.data.returnOutcome == 'Withdrawn'
+            && changedOnly(['status', 'returnRequester', 'returnReason',
+                            'returnOutcome', 'returnTime', 'updatedAt']))
+          ||
           // Seller records a future payout preference for a completed sale.
           (resource.data.status == 'COMPLETED'
             && request.resource.data.status == 'COMPLETED'
@@ -461,13 +505,11 @@ service cloud.firestore {
         && resource.data.uploaderID == request.auth.uid;
     }
 
-    // ---- study groups (not yet used by the client: groups are still local) --
+    // ---- study groups ------------------------------------------------------
     match /studyGroups/{groupId} {
-      // Private group metadata is visible only to the owner and members.
-      allow read: if signedIn()
-        && (resource.data.get('private', false) == false
-          || resource.data.creatorID == request.auth.uid
-          || request.auth.uid in resource.data.get('members', []));
+      // Group name, module and description are discoverable so students can
+      // search for both public and private groups. The feed remains members-only.
+      allow read: if signedIn();
       allow create: if signedIn()
         && request.resource.data.creatorID == request.auth.uid;
       allow update: if signedIn()
@@ -481,6 +523,12 @@ service cloud.firestore {
                    .hasOnly([request.auth.uid])
               && (request.resource.data.members.toSet().difference(resource.data.members.toSet()).size() == 0
                   || resource.data.get('private', false) == false))
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requests'])
+              && request.resource.data.requests.toSet()
+                   .difference(resource.data.get('requests', []).toSet())
+                   .hasOnly([request.auth.uid])
+              && resource.data.get('requests', []).toSet()
+                   .difference(request.resource.data.requests.toSet()).size() == 0)
         );
       allow delete: if signedIn()
         && resource.data.creatorID == request.auth.uid;

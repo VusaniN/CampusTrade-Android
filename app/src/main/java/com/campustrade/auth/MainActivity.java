@@ -1800,6 +1800,10 @@ public class MainActivity extends Activity {
         String cancellationReason = "";
         String cancellationOutcome = "";
         long cancellationTime = 0;
+        String returnRequester = "";
+        String returnReason = "";
+        String returnOutcome = "";
+        long returnTime = 0;
         long payoutRequestedAt = 0;
         String payoutMethod = "Bank transfer", payoutSchedule = "On request";
         long createdTime = 0;
@@ -1845,6 +1849,9 @@ public class MainActivity extends Activity {
             if (status.equals(CANCELLED)) return "Cancelled";
             if (status.equals(REQUESTED)) return "Request pending";
             if (cancellationPending()) return "Cancellation requested";
+            if (returnPending()) return "Return requested";
+            if (status.equals(COMPLETED) && "Approved".equals(returnOutcome)) return "Return approved";
+            if (status.equals(COMPLETED) && "Declined".equals(returnOutcome)) return "Return declined";
             if (status.equals(COMPLETED)) return "Completed";
             if (method.equals("Cash on collection")) return "Pay at collection";
             return "Awaiting collection";
@@ -1893,6 +1900,33 @@ public class MainActivity extends Activity {
         boolean withdrawCancellation(String email, long now) {
             if (!cancellationPending() || !cancellationRequester.equalsIgnoreCase(email.trim())) return false;
             cancellationRequester = ""; cancellationOutcome = "Withdrawn"; cancellationTime = now; return true;
+        }
+        // A buyer can ask to return a completed order; the seller decides.
+        boolean returnPending() {
+            return status.equals(COMPLETED) && "Requested".equals(returnOutcome) && !returnRequester.isEmpty();
+        }
+        boolean requestReturn(String email, String reason, long now) {
+            if (!isBuyer(email) || !status.equals(COMPLETED) || returnPending()
+                    || !returnOutcome.isEmpty() || reason.trim().isEmpty()) return false;
+            returnRequester = email.trim().toLowerCase(Locale.ROOT);
+            returnReason = reason.trim();
+            returnOutcome = "Requested";
+            returnTime = now;
+            return true;
+        }
+        boolean resolveReturn(String email, boolean approve, long now) {
+            if (!isSeller(email) || !returnPending()) return false;
+            returnRequester = "";
+            returnOutcome = approve ? "Approved" : "Declined";
+            returnTime = now;
+            return true;
+        }
+        boolean withdrawReturn(String email, long now) {
+            if (!returnPending() || !returnRequester.equalsIgnoreCase(email.trim())) return false;
+            returnRequester = "";
+            returnOutcome = "Withdrawn";
+            returnTime = now;
+            return true;
         }
         boolean requestPayout(String email, long now) {
             return requestPayout(email, now, "Bank transfer", "On request");
