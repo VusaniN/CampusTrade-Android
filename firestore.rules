@@ -638,16 +638,81 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.buyerId == request.auth.uid
         && request.resource.data.sellerId != request.auth.uid
-        && request.resource.data.state in ['Pending', 'Countered']
+        && request.resource.data.state == 'Pending'
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.amount <= 9999999.99
+        && request.resource.data.turn is string
+        && request.resource.data.turn.lower()
+             == get(/databases/$(db)/documents/users/$(request.resource.data.sellerId)).data.stuEmail.lower()
+        && request.resource.data.created is number
+        && request.resource.data.created > 0
+        && request.resource.data.expiresAt is number
+        && request.resource.data.expiresAt >= 0
         && exists(/databases/$(db)/documents/listings/$(request.resource.data.listingId))
         && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.sellerID
-             == request.resource.data.sellerId;
+             == request.resource.data.sellerId
+        && request.resource.data.keys().hasOnly(
+             ['buyerId', 'sellerId', 'listingId', 'amount', 'turn', 'state', 'created', 'expiresAt']);
+      // Offers are a turn-based state machine. Only the student whose turn it is
+      // can accept, decline or counter; either participant can cancel; only the
+      // seller can close offers when the listing closes.
       allow update: if signedIn()
         && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid)
         && request.resource.data.buyerId == resource.data.buyerId
         && request.resource.data.sellerId == resource.data.sellerId
         && request.resource.data.listingId == resource.data.listingId
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amount', 'turn', 'state', 'expiresAt']);
+        && request.resource.data.created == resource.data.created
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.amount <= 9999999.99
+        && request.resource.data.turn is string
+        && request.resource.data.state in
+             ['Pending', 'Countered', 'Accepted', 'Declined', 'Cancelled', 'Closed']
+        && request.resource.data.expiresAt is number
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['amount', 'turn', 'state', 'expiresAt'])
+        && (
+          (resource.data.state in ['Pending', 'Countered']
+            && resource.data.turn.lower() == request.auth.token.email.lower()
+            && request.resource.data.state == 'Accepted'
+            && request.resource.data.amount == resource.data.amount
+            && request.resource.data.turn == resource.data.turn
+            && request.resource.data.expiresAt > resource.data.expiresAt)
+          ||
+          (resource.data.state in ['Pending', 'Countered']
+            && resource.data.turn.lower() == request.auth.token.email.lower()
+            && request.resource.data.state == 'Declined'
+            && request.resource.data.amount == resource.data.amount
+            && request.resource.data.turn == resource.data.turn
+            && request.resource.data.expiresAt == resource.data.expiresAt)
+          ||
+          (resource.data.state in ['Pending', 'Countered']
+            && resource.data.turn.lower() == request.auth.token.email.lower()
+            && request.resource.data.state == 'Countered'
+            && request.resource.data.expiresAt == resource.data.expiresAt
+            && (
+              (request.auth.uid == resource.data.buyerId
+                && request.resource.data.turn.lower()
+                     == get(/databases/$(db)/documents/users/$(resource.data.sellerId)).data.stuEmail.lower())
+              ||
+              (request.auth.uid == resource.data.sellerId
+                && request.resource.data.turn.lower()
+                     == get(/databases/$(db)/documents/users/$(resource.data.buyerId)).data.stuEmail.lower())
+            ))
+          ||
+          (resource.data.state in ['Pending', 'Countered', 'Accepted']
+            && request.resource.data.state == 'Cancelled'
+            && request.resource.data.amount == resource.data.amount
+            && request.resource.data.turn == resource.data.turn
+            && request.resource.data.expiresAt == resource.data.expiresAt)
+          ||
+          (resource.data.sellerId == request.auth.uid
+            && resource.data.state in ['Pending', 'Countered', 'Accepted']
+            && request.resource.data.state == 'Closed'
+            && request.resource.data.amount == resource.data.amount
+            && request.resource.data.turn == resource.data.turn
+            && request.resource.data.expiresAt == resource.data.expiresAt)
+        );
       allow delete: if false;
     }
 
@@ -665,8 +730,13 @@ service cloud.firestore {
         && (request.resource.data.buyerId == request.auth.uid
           || request.resource.data.sellerId == request.auth.uid)
         && request.resource.data.orderId == orderId
+        && request.resource.data.buyerEmail is string
+        && request.resource.data.sellerEmail is string
         && request.resource.data.location is string
+        && request.resource.data.location.size() >= 3
+        && request.resource.data.location.size() <= 200
         && request.resource.data.time is number
+        && request.resource.data.time > 0
         && request.resource.data.confirmed is list
         && request.resource.data.confirmed.toSet().hasOnly([request.auth.token.email.lower()])
         && request.resource.data.revision is number
@@ -675,17 +745,29 @@ service cloud.firestore {
         && request.resource.data.updatedBy.lower() == request.auth.token.email.lower()
         && request.resource.data.arrangementUpdatedAt is number
         && request.resource.data.arrangementUpdatedAt > 0
-        && request.resource.data.updatedAt is timestamp;
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.keys().hasOnly(
+             ['orderId', 'buyerId', 'sellerId', 'buyerEmail', 'sellerEmail', 'location',
+              'time', 'confirmed', 'revision', 'updatedBy', 'arrangementUpdatedAt', 'updatedAt']);
+      // A confirmation keeps the place/time and revision. Any new arrangement
+      // must increment the revision and reset confirmations to the proposer.
       allow update: if signedIn()
         && (resource.data.buyerId == request.auth.uid
           || resource.data.sellerId == request.auth.uid)
         && request.resource.data.buyerId == resource.data.buyerId
         && request.resource.data.sellerId == resource.data.sellerId
         && request.resource.data.orderId == resource.data.orderId
+        && request.resource.data.buyerEmail == resource.data.buyerEmail
+        && request.resource.data.sellerEmail == resource.data.sellerEmail
         && request.resource.data.updatedAt is timestamp
-        && request.resource.data.confirmed.toSet()
-             .difference(resource.data.confirmed.toSet())
-             .hasOnly([request.auth.token.email.lower()])
+        && request.resource.data.location is string
+        && request.resource.data.location.size() >= 3
+        && request.resource.data.location.size() <= 200
+        && request.resource.data.time is number
+        && request.resource.data.time > 0
+        && request.resource.data.confirmed is list
+        && request.resource.data.confirmed.toSet().hasOnly(
+             [resource.data.buyerEmail.lower(), resource.data.sellerEmail.lower()])
         && request.resource.data.revision is number
         && request.resource.data.revision >= 1
         && request.resource.data.updatedBy is string
@@ -693,10 +775,22 @@ service cloud.firestore {
         && request.resource.data.arrangementUpdatedAt is number
         && request.resource.data.arrangementUpdatedAt > 0
         && (
-          request.resource.data.revision == resource.data.get('revision', 1)
-          || (request.resource.data.revision == resource.data.get('revision', 1) + 1
-              && request.resource.data.confirmed.toSet()
-                   .hasOnly([request.auth.token.email.lower()]))
+          (request.resource.data.location == resource.data.location
+            && request.resource.data.time == resource.data.time
+            && request.resource.data.revision == resource.data.get('revision', 1)
+            && request.resource.data.confirmed.toSet()
+                 .difference(resource.data.confirmed.toSet())
+                 .hasOnly([request.auth.token.email.lower()])
+            && resource.data.confirmed.toSet()
+                 .difference(request.resource.data.confirmed.toSet()).size() == 0
+            && request.resource.data.arrangementUpdatedAt
+                 >= resource.data.arrangementUpdatedAt)
+          ||
+          (request.resource.data.revision == resource.data.get('revision', 1) + 1
+            && request.resource.data.confirmed.toSet()
+                 .hasOnly([request.auth.token.email.lower()])
+            && request.resource.data.arrangementUpdatedAt
+                 > resource.data.arrangementUpdatedAt)
         )
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['location', 'time', 'confirmed', 'revision', 'updatedBy',

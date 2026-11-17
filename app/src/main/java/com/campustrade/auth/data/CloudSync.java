@@ -32,12 +32,12 @@ public final class CloudSync {
 
     // Save the "keep me logged in" details used on startup.
     public static String uid(Context ctx) {
-        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("uid", "");
+        return com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS).getString("uid", "");
     }
 
     public static void saveSession(Context ctx, String uid, String email, String name) {
         // Save the ID and signed-in flag together.
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS).edit()
                 .putString("uid", uid)
                 .putString("student_email", email)
                 .putString("student_name", name)
@@ -49,7 +49,7 @@ public final class CloudSync {
 
     // Two-way ID/email map so chats don't check Firebase every time.
     private static SharedPreferences dir(Context ctx) {
-        return ctx.getSharedPreferences(PREFS + "_directory", Context.MODE_PRIVATE);
+        return com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS + "_directory");
     }
 
     public static void directoryPut(Context ctx, String uid, String email) {
@@ -69,7 +69,7 @@ public final class CloudSync {
         }
         // Names use their own key because names can change.
         if (name != null && !name.isEmpty()) {
-            android.content.SharedPreferences.Editor edit = ctx.getSharedPreferences(PREFS + "_directory", Context.MODE_PRIVATE).edit();
+            android.content.SharedPreferences.Editor edit = com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS + "_directory").edit();
             edit.putString("n:" + uid, name);
             if (email != null && !email.isEmpty()) edit.putString("em:" + email.toLowerCase(java.util.Locale.ROOT), name);
             edit.apply();
@@ -79,7 +79,7 @@ public final class CloudSync {
     /** Cached name for an email, or empty. */
     public static String nameForEmail(Context ctx, String email) {
         if (email == null || email.isEmpty()) return "";
-        return ctx.getSharedPreferences(PREFS + "_directory", Context.MODE_PRIVATE)
+        return com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS + "_directory")
                 .getString("em:" + email.toLowerCase(java.util.Locale.ROOT), "");
     }
 
@@ -147,7 +147,7 @@ public final class CloudSync {
                         }
                         String name = doc.getString("stuName");
                         if (name != null && !name.isEmpty()) {
-                            ctx.getSharedPreferences(PREFS + "_directory", Context.MODE_PRIVATE)
+                            com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS + "_directory")
                                     .edit().putString("n:" + peer, name).apply();
                         }
                         cb.onOk(peer);
@@ -168,7 +168,7 @@ public final class CloudSync {
 
     /** Display name for the ID. */
     public static String displayName(Context ctx, String uid) {
-        String name = ctx.getSharedPreferences(PREFS + "_directory", Context.MODE_PRIVATE)
+        String name = com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS + "_directory")
                 .getString("n:" + uid, "");
         if (name != null && !name.isEmpty()) {
             return name;
@@ -183,7 +183,7 @@ public final class CloudSync {
 
     private static SharedPreferences idmap(Context ctx) {
         // Link a local listing ID to its cloud copy so retries update the same item.
-        return ctx.getSharedPreferences(PREFS + "_remoteids", Context.MODE_PRIVATE);
+        return com.campustrade.auth.data.SecurePrefs.get(ctx, PREFS + "_remoteids");
     }
 
     public static void putRemoteId(Context ctx, String localId, String docId) {
@@ -236,7 +236,15 @@ public final class CloudSync {
 
     /** Upload a gallery image and return its URL, or null. */
     public static String uploadPhoto(Context ctx, Uri uri) {
-        return uploadFile(ctx, uri, "image/upload", "photo.jpg", "image/jpeg");
+        String type = uri == null ? "" : ctx.getContentResolver().getType(uri);
+        if (type == null || type.trim().isEmpty()) type = "image/jpeg";
+        type = type.toLowerCase(java.util.Locale.ROOT);
+        boolean allowed = false;
+        for (String candidate : Constants.ALLOWED_IMAGE_MIMES) {
+            if (candidate.equals(type)) { allowed = true; break; }
+        }
+        if (!allowed) return null;
+        return uploadFile(ctx, uri, "image/upload", "photo", type);
     }
 
     /** Upload a document and return its URL. */
@@ -257,6 +265,17 @@ public final class CloudSync {
         // A photo that is already a URL is not uploaded again.
         if ("http".equals(uri.getScheme()) || "https".equals(uri.getScheme())) {
             return uri.toString();
+        }
+        String type = contentType == null ? "" : contentType.toLowerCase(java.util.Locale.ROOT);
+        long size = uploadSize(ctx, uri);
+        if (type.startsWith("image/")) {
+            boolean allowed = false;
+            for (String candidate : Constants.ALLOWED_IMAGE_MIMES) {
+                if (candidate.equals(type)) { allowed = true; break; }
+            }
+            if (!allowed || (size > 0 && size > Constants.MAX_IMAGE_BYTES)) return null;
+        } else if (size > 0 && size > Constants.MAX_DOCUMENT_BYTES) {
+            return null;
         }
         String boundary = "----CampusTrade" + System.currentTimeMillis();
         HttpURLConnection conn = null;
@@ -310,6 +329,16 @@ public final class CloudSync {
                 conn.disconnect();
             }
         }
+    }
+
+    private static long uploadSize(Context ctx, Uri uri) {
+        try (android.database.Cursor cursor = ctx.getContentResolver().query(uri,
+                new String[] {android.provider.OpenableColumns.SIZE}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) {
+                return cursor.getLong(0);
+            }
+        } catch (RuntimeException ignored) { }
+        return 0;
     }
 
     private static void writeField(OutputStream out, String boundary,

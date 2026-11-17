@@ -51,6 +51,7 @@ public class Admin {
         boolean fromAuth = host.adminOnlySession;
         host.adminAccess = false;
         host.adminOnlySession = false;
+        host.clearSensitiveVerification();
         if (fromAuth) host.auth.showAuthScreen();
         else host.showAppScreen("Profile");
     }
@@ -60,6 +61,7 @@ public class Admin {
         boolean fromAuth = host.adminOnlySession;
         host.adminAccess = false;
         host.adminOnlySession = false;
+        host.clearSensitiveVerification();
         Toast.makeText(host, "Admin mode locked. You'll need the passcode again.", Toast.LENGTH_SHORT).show();
         if (fromAuth) host.auth.showAuthScreen();
         else host.showAppScreen("Settings");
@@ -1118,7 +1120,7 @@ public class Admin {
                 host.muted, 10));
         long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
         int students = 0, live = 0;
-        for (java.util.Map.Entry<String, ?> entry : host.getSharedPreferences(MainActivity.PREFS + "_profiles", Context.MODE_PRIVATE).getAll().entrySet()) {
+        for (java.util.Map.Entry<String, ?> entry : com.campustrade.auth.data.SecurePrefs.get(host, MainActivity.PREFS + "_profiles").getAll().entrySet()) {
             if (!host.adminLast24Hours && entry.getKey().startsWith("full_name:")) students++;
             if (host.adminLast24Hours && entry.getKey().startsWith("last_active:") && entry.getValue() instanceof Long
                     && (Long) entry.getValue() >= cutoff) students++;

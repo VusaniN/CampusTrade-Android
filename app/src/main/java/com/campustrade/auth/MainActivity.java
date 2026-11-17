@@ -188,8 +188,12 @@ public class MainActivity extends Activity {
     boolean inboxUnreadOnly = false;
     String inboxQuery = "";
     private static final int UNLOCK_REQUEST = 72;
+    private static final int SENSITIVE_ACTION_REQUEST = 78;
+    private static final long SENSITIVE_ACTION_VALID_MS = 15L * 60 * 1000;
     private boolean needsUnlock = false;
     private boolean unlocking = false;
+    private Runnable pendingSensitiveAction;
+    private long sensitiveVerifiedAt = 0;
     boolean editingFromSettings = false;
     String academicFilter = "All";
     long academicCalendarDate = System.currentTimeMillis();
@@ -335,7 +339,7 @@ public class MainActivity extends Activity {
         adminAnalytics = new AdminAnalytics(this);
         notification.createNotificationChannel();
         notification.requestNotificationPermission();
-        SharedPreferences session = getSharedPreferences(PREFS, MODE_PRIVATE);
+        SharedPreferences session = com.campustrade.auth.data.SecurePrefs.get(this, PREFS);
         String savedEmail = session.getString("student_email", "");
         String savedUid = session.getString("uid", "");
         String savedTab = savedInstanceState != null
@@ -346,7 +350,7 @@ public class MainActivity extends Activity {
         if (savedSession) {
             currentStudentEmail = savedEmail;
             currentUid = savedUid;
-            currentStudentName = getSharedPreferences(PREFS + "_profiles", MODE_PRIVATE).getString("full_name:" + savedEmail, "Student");
+            currentStudentName = com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_profiles").getString("full_name:" + savedEmail, "Student");
             CloudSync.directoryPut(this, currentUid, currentStudentEmail);
             refreshAdminRole();
             new AuthRepository().touchLastActive(currentUid);
@@ -383,8 +387,18 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean isAdminTab(String tab) {
+        return tab.equals("Admin") || tab.equals("AdminReports") || tab.equals("AdminAnalytics");
+    }
+
     // Rebuild the current tab so no old views remain.
     void showAppScreen(String tab) {
+        boolean enteringAdmin = isAdminTab(tab) && !isAdminTab(currentTab);
+        if (enteringAdmin && admin.canUseAdmin()
+                && System.currentTimeMillis() - sensitiveVerifiedAt > SENSITIVE_ACTION_VALID_MS) {
+            confirmSensitiveAction(() -> showAppScreen(tab));
+            return;
+        }
         if (adminOnlySession) {
             admin.showAdminOnlyScreen(tab.equals("AdminReports") ? "AdminReports"
                     : tab.equals("AdminAnalytics") ? "AdminAnalytics" : "Admin");
@@ -397,7 +411,8 @@ public class MainActivity extends Activity {
         }
         if (tab.equals("Groups") && !currentTab.equals("Groups")) groupsReturnTab = currentTab;
         currentTab = tab;
-        boolean secure = settingsPrefs().getBoolean("screen_privacy", false);
+        boolean secure = settingsPrefs().getBoolean("screen_privacy", false)
+                || isAdminTab(tab) || tab.equals("Payments");
         if (secure) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         LinearLayout screen = new LinearLayout(this);
@@ -451,9 +466,77 @@ public class MainActivity extends Activity {
         setContentView(screen);
     }
 
+    /** Require a recent screen-lock check or password before a destructive action. */
+    void confirmSensitiveAction(Runnable action) {
+        if (action == null) return;
+        if (System.currentTimeMillis() - sensitiveVerifiedAt <= SENSITIVE_ACTION_VALID_MS) {
+            action.run();
+            return;
+        }
+        KeyguardManager guard = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+        Intent confirm = guard == null || !guard.isDeviceSecure() ? null
+                : guard.createConfirmDeviceCredentialIntent("Confirm CampusTrade action",
+                        "Use your phone's screen lock to continue");
+        if (confirm != null) {
+            pendingSensitiveAction = () -> {
+                sensitiveVerifiedAt = System.currentTimeMillis();
+                action.run();
+            };
+            try {
+                startActivityForResult(confirm, SENSITIVE_ACTION_REQUEST);
+                return;
+            } catch (Exception ignored) {
+                pendingSensitiveAction = null;
+            }
+        }
+        promptPasswordForSensitiveAction(action);
+    }
+
+    private void promptPasswordForSensitiveAction(Runnable action) {
+        com.google.firebase.auth.FirebaseUser user =
+                com.google.firebase.auth.FirebaseAuth.getInstance().getCurrentUser();
+        if (user == null || user.getEmail() == null || user.getEmail().trim().isEmpty()) {
+            Toast.makeText(this, "Set a phone screen lock or sign in again to confirm this action.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        android.widget.EditText password = new android.widget.EditText(this);
+        password.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        password.setHint("Your CampusTrade password");
+        int pad = ui.dp(20);
+        password.setPadding(pad, ui.dp(10), pad, ui.dp(10));
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Confirm it's you")
+                .setMessage("Re-enter your password before this sensitive action.")
+                .setView(password)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Confirm", (dialog, which) -> {
+                    String value = password.getText().toString();
+                    if (value.isEmpty()) {
+                        Toast.makeText(this, "Password is required.", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    user.reauthenticate(com.google.firebase.auth.EmailAuthProvider
+                                    .getCredential(user.getEmail(), value))
+                            .addOnSuccessListener(v -> {
+                                sensitiveVerifiedAt = System.currentTimeMillis();
+                                action.run();
+                            })
+                            .addOnFailureListener(e -> Toast.makeText(this,
+                                    "Couldn't confirm your password. Try again.",
+                                    Toast.LENGTH_LONG).show());
+                })
+                .show();
+    }
+
+    void clearSensitiveVerification() {
+        sensitiveVerifiedAt = 0;
+    }
+
     // Settings are saved per email.
     SharedPreferences settingsPrefs() {
-        return getSharedPreferences(PREFS + "_settings_" + currentStudentEmail, MODE_PRIVATE);
+        return com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_settings_" + currentStudentEmail);
     }
 
     boolean isDebugBuild() {
@@ -462,12 +545,12 @@ public class MainActivity extends Activity {
 
     boolean isSignedIn() {
         return !currentStudentEmail.isEmpty()
-                && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false);
+                && com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false);
     }
 
     boolean hasProfilePhoto() {
         if (currentStudentEmail.isEmpty()) return false;
-        String image = getSharedPreferences(PREFS + "_profiles", MODE_PRIVATE)
+        String image = com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_profiles")
                 .getString("profile_image:" + currentStudentEmail, "");
         return image != null && !image.trim().isEmpty();
     }
@@ -496,7 +579,7 @@ public class MainActivity extends Activity {
                     new AuthRepository().logout();
                     currentUid = "";
                     currentStudentEmail = "";
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().clear().apply();
+                    com.campustrade.auth.data.SecurePrefs.get(MainActivity.this, PREFS).edit().clear().apply();
                     auth.showAuthScreen();
                     return;
                 }
@@ -512,7 +595,7 @@ public class MainActivity extends Activity {
     // Reports are saved on this phone.
     void loadModerationReports() {
         try {
-            JSONArray records = new JSONArray(getSharedPreferences(PREFS + "_reports", MODE_PRIVATE).getString("records", "[]"));
+            JSONArray records = new JSONArray(com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_reports").getString("records", "[]"));
             for (int i = 0; i < records.length(); i++) {
                 JSONObject r = records.getJSONObject(i);
                 moderationReports.add(new ModerationReport(r.getString("id"), r.getString("product"), r.getString("title"), r.getString("reporter"),
@@ -529,7 +612,7 @@ public class MainActivity extends Activity {
                     .put("reporter", r.reporterEmail).put("name", r.reporterName).put("reason", r.reason).put("detail", r.detail)
                     .put("priority", r.priority).put("state", r.state).put("time", r.createdAt));
         } catch (org.json.JSONException e) { return false; }
-        return getSharedPreferences(PREFS + "_reports", MODE_PRIVATE).edit().putString("records", records.toString()).commit();
+        return com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_reports").edit().putString("records", records.toString()).commit();
     }
 
     String studentName(String email) {
@@ -540,7 +623,7 @@ public class MainActivity extends Activity {
             String name = CloudSync.displayName(this, email);
             return name == null || name.isEmpty() ? "Student seller" : name;
         }
-        String saved = getSharedPreferences(PREFS + "_profiles", MODE_PRIVATE).getString("full_name:" + email, "");
+        String saved = com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_profiles").getString("full_name:" + email, "");
         if (saved != null && !saved.trim().isEmpty()) return saved;
         String cached = CloudSync.nameForEmail(this, email);
         return cached == null || cached.trim().isEmpty() ? "Student seller" : cached;
@@ -639,12 +722,23 @@ public class MainActivity extends Activity {
     // Handle file pickers and the app lock.
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == SENSITIVE_ACTION_REQUEST) {
+            Runnable action = pendingSensitiveAction;
+            pendingSensitiveAction = null;
+            if (resultCode == RESULT_OK && action != null) {
+                sensitiveVerifiedAt = System.currentTimeMillis();
+                action.run();
+            } else {
+                Toast.makeText(this, "Action cancelled.", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
         if (requestCode == UNLOCK_REQUEST) {
             unlocking = false;
             needsUnlock = false;
             getWindow().getDecorView().setVisibility(View.VISIBLE);
             if (resultCode != RESULT_OK) {
-                getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("signed_in", false).apply();
+                com.campustrade.auth.data.SecurePrefs.get(this, PREFS).edit().putBoolean("signed_in", false).apply();
                 finish();
             }
             return;
@@ -665,7 +759,7 @@ public class MainActivity extends Activity {
                         Toast.makeText(this, "The profile photo couldn't be uploaded.", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    getSharedPreferences(PREFS + "_profiles", MODE_PRIVATE).edit()
+                    com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_profiles").edit()
                             .putString("profile_image:" + currentStudentEmail, url).apply();
                     new AuthRepository().updateProfileImage(currentUid, url,
                             new AuthRepository.SimpleCallback() {
@@ -1021,8 +1115,8 @@ public class MainActivity extends Activity {
             String uid = new AuthRepository().currentUid();
             runOnUiThread(() -> {
                 if (isDestroyed() || isFinishing()) return;
-                if (uid == null && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false)) {
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("signed_in", false).apply();
+                if (uid == null && com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false)) {
+                    com.campustrade.auth.data.SecurePrefs.get(this, PREFS).edit().putBoolean("signed_in", false).apply();
                     auth.showAuthScreen();
                 } else if (uid != null && (currentUid == null || currentUid.isEmpty())) {
                     currentUid = uid;
@@ -1178,7 +1272,7 @@ public class MainActivity extends Activity {
 
     void handleNotificationIntent(Intent intent) {
         if (intent == null || currentStudentEmail.isEmpty()
-                || !getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false)) return;
+                || !com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false)) return;
         boolean openOrders = intent.getBooleanExtra("open_orders", false);
         boolean openNotifications = intent.getBooleanExtra("open_notifications", false);
         boolean openInbox = intent.getBooleanExtra("open_inbox", false);
@@ -1218,7 +1312,7 @@ public class MainActivity extends Activity {
     @Override protected void onStop() {
         super.onStop();
         if (!unlocking && !currentStudentEmail.isEmpty()
-                && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false)) needsUnlock = true;
+                && com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false)) needsUnlock = true;
     }
 
     // No real back stack, so handle common back cases by hand.
@@ -1228,7 +1322,7 @@ public class MainActivity extends Activity {
             admin.exitAdminMode();
             return;
         }
-        if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false)) {
+        if (com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false)) {
             if (admin.canUseAdmin() && currentTab.equals("AdminReports")) { showAppScreen("Admin"); return; }
             if (admin.canUseAdmin() && currentTab.equals("AdminAnalytics")) { showAppScreen("Admin"); return; }
             if (admin.canUseAdmin() && currentTab.equals("Admin")) { admin.exitAdminMode(); return; }
@@ -1244,7 +1338,7 @@ public class MainActivity extends Activity {
     // On return, check the lock and refresh settings.
     @Override protected void onResume() {
         super.onResume();
-        boolean signedIn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false);
+        boolean signedIn = com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false);
         if (needsUnlock && !unlocking && settingsPrefs().getBoolean("app_lock", false)) {
             KeyguardManager guard = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
             Intent unlock = guard == null ? null : guard.createConfirmDeviceCredentialIntent("Unlock CampusTrade", "Confirm your phone's screen lock");
@@ -1253,7 +1347,7 @@ public class MainActivity extends Activity {
                 getWindow().getDecorView().setVisibility(View.INVISIBLE);
                 startActivityForResult(unlock, UNLOCK_REQUEST);
             } else {
-                getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("signed_in", false).apply();
+                com.campustrade.auth.data.SecurePrefs.get(this, PREFS).edit().putBoolean("signed_in", false).apply();
                 finish();
             }
         } else if (signedIn && shouldNight() != nightActive) {

@@ -3395,7 +3395,7 @@ public class Market {
             TextView chat = host.ui.secondaryButton("Chat");
             chat.setOnClickListener(v -> {
                 page.dismiss();
-                host.getSharedPreferences(host.PREFS + "_messages", Context.MODE_PRIVATE).edit()
+                com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages").edit()
                         .putBoolean("market:" + host.inbox.marketplaceChatKey(product.sellerEmail), true).apply();
                 host.inbox.showConversation(product.sellerEmail);
             });
@@ -3517,7 +3517,7 @@ public class Market {
                     Toast.makeText(host, "This one is yours.", Toast.LENGTH_SHORT).show();
                 } else {
                     details.dismiss();
-                    host.getSharedPreferences(host.PREFS + "_messages", Context.MODE_PRIVATE).edit()
+                    com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages").edit()
                             .putBoolean("market:" + host.inbox.marketplaceChatKey(product.sellerEmail), true).apply();
                     host.inbox.showConversation(product.sellerEmail);
                 }
@@ -3580,7 +3580,7 @@ public class Market {
     // Listings are saved in phone storage.
     public void loadProducts() {
         try {
-            JSONArray records = new JSONArray(host.getSharedPreferences(host.PREFS + "_listings", Context.MODE_PRIVATE).getString("records", "[]"));
+            JSONArray records = new JSONArray(com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_listings").getString("records", "[]"));
             boolean skipped = false;
             for (int i = 0; i < records.length(); i++) {
                 try {
@@ -3647,7 +3647,7 @@ public class Market {
                         .put("savedBy", new JSONArray(product.savedBy)));
             }
         } catch (org.json.JSONException e) { return false; }
-        return host.getSharedPreferences(host.PREFS + "_listings", Context.MODE_PRIVATE).edit().putString("records", records.toString()).commit();
+        return com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_listings").edit().putString("records", records.toString()).commit();
     }
 
     public LinearLayout marketFilterRow() {

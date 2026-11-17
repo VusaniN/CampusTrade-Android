@@ -64,15 +64,21 @@ public final class InvoiceMailer {
         final String pdfBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
         final String subject = "CampusTrade invoice " + order.invoiceNumber + " · " + order.itemTitle;
         final String body = emailBody(host, order);
-        final String to = order.buyerEmail + "," + order.sellerEmail;
         new Thread(() -> {
+            String idToken = com.campustrade.auth.data.RelaySecurity.firebaseIdToken();
+            if (idToken.isEmpty()) {
+                host.runOnUiThread(() -> emailInvoice(host, order));
+                return;
+            }
             int code = 0;
             String response = "";
             HttpURLConnection connection = null;
             try {
                 JSONObject payload = new JSONObject();
-                payload.put("secret", Constants.INVOICE_EMAIL_SECRET);
-                payload.put("to", to);
+                payload.put("orderId", order.id);
+                payload.put("buyerEmail", order.buyerEmail);
+                payload.put("sellerEmail", order.sellerEmail);
+                payload.put("invoiceNumber", order.invoiceNumber);
                 payload.put("subject", subject);
                 payload.put("body", body);
                 payload.put("filename", "invoice-" + order.invoiceNumber.replaceAll("[^A-Za-z0-9._-]", "_") + ".pdf");
@@ -81,6 +87,11 @@ public final class InvoiceMailer {
 
                 connection = (HttpURLConnection) new URL(Constants.INVOICE_EMAIL_ENDPOINT).openConnection();
                 connection.setRequestMethod("POST");
+                connection.setRequestProperty("Authorization", "Bearer " + idToken);
+                String appCheck = com.campustrade.auth.data.RelaySecurity.appCheckToken();
+                if (!appCheck.isEmpty()) {
+                    connection.setRequestProperty("X-Firebase-AppCheck", appCheck);
+                }
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
                 connection.setRequestProperty("Accept", "text/plain");
                 connection.setDoOutput(true);

@@ -67,7 +67,7 @@ public class Profile {
         email.setSingleLine(true);
         email.setEllipsize(TextUtils.TruncateAt.END);
         identity.addView(email);
-        String course = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE).getString("course:" + host.currentStudentEmail, "");
+        String course = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles").getString("course:" + host.currentStudentEmail, "");
         if (!course.isEmpty()) identity.addView(host.ui.bodyText(course, host.muted, 12));
         TextView accountEdit = host.ui.textButton("Edit profile");
         accountEdit.setPadding(0, host.ui.dp(2), 0, 0);
@@ -390,7 +390,7 @@ public class Profile {
 
     // The verified badge comes from Firebase, not just the local session.
     public void buildProfile(LinearLayout content) {
-        SharedPreferences profilePrefs = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE);
+        SharedPreferences profilePrefs = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles");
         boolean verified = new AuthRepository().isCurrentEmailVerified();
         int ownedListings = 0;
         host.savedListings = 0;
@@ -511,7 +511,7 @@ public class Profile {
             new AuthRepository().logout();
             host.currentUid = "";
             host.adminAccount = false;
-            host.getSharedPreferences(host.PREFS, Context.MODE_PRIVATE).edit().clear().apply();
+            com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS).edit().clear().apply();
             host.savedListings = 0;
             host.messageCount = 0;
             host.auth.showAuthScreen();
@@ -529,7 +529,7 @@ public class Profile {
     }
 
     private View profileAvatar(int size, int textSize, int textColor, int background) {
-        String image = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE)
+        String image = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles")
                 .getString("profile_image:" + host.currentStudentEmail, "");
         if (image != null && !image.isEmpty()) {
             ImageView photo = new ImageView(host);
@@ -546,7 +546,7 @@ public class Profile {
 
     // Use the seller's avatar, not the signed-in student's.
     private View sellerAvatar(String email, String name, int size, int textSize, int textColor, int background) {
-        String image = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE)
+        String image = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles")
                 .getString("profile_image:" + email, "");
         if (image != null && !image.isEmpty()) {
             ImageView photo = new ImageView(host);
@@ -583,14 +583,16 @@ public class Profile {
         host.ui.dialog().setTitle("Deactivate account?")
                 .setMessage("You will be signed out and can't sign in again until the campus team restores your account.")
                 .setNegativeButton("Cancel", null)
-                .setPositiveButton("Deactivate", (d, which) -> setAccountStatus("deactivated", false)).show();
+                .setPositiveButton("Deactivate", (d, which) ->
+                        host.confirmSensitiveAction(() -> setAccountStatus("deactivated", false))).show();
     }
 
     private void confirmDelete() {
         host.ui.dialog().setTitle("Delete account?")
                 .setMessage("Your public profile will be removed and you will be signed out. Your account remains unavailable unless the campus team restores it.")
                 .setNegativeButton("Cancel", null)
-                .setPositiveButton("Delete", (d, which) -> setAccountStatus("deleted", true)).show();
+                .setPositiveButton("Delete", (d, which) ->
+                        host.confirmSensitiveAction(() -> setAccountStatus("deleted", true))).show();
     }
 
     private void setAccountStatus(String status, boolean deletePublicProfile) {
@@ -619,7 +621,8 @@ public class Profile {
         host.currentUid = "";
         host.currentStudentEmail = "";
         host.adminAccount = false;
-        host.getSharedPreferences(host.PREFS, Context.MODE_PRIVATE).edit().clear().apply();
+        host.clearSensitiveVerification();
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS).edit().clear().apply();
         host.savedListings = 0;
         host.messageCount = 0;
         host.auth.showAuthScreen();
@@ -669,7 +672,7 @@ public class Profile {
         name.setGravity(Gravity.CENTER);
         name.setPadding(0, host.ui.dp(12), 0, host.ui.dp(3));
         hero.addView(name);
-        String cachedCourse = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE)
+        String cachedCourse = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles")
                 .getString("course:" + email, "");
         TextView program = host.ui.bodyText(cachedCourse.isEmpty() ? "Eduvos student" : cachedCourse, host.muted, 12);
         program.setGravity(Gravity.CENTER);
@@ -1149,7 +1152,7 @@ public class Profile {
     public void showEditProfile() {
         final boolean returnToSettings = host.editingFromSettings;
         host.editingFromSettings = false;
-        SharedPreferences prefs = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE);
+        SharedPreferences prefs = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles");
         LinearLayout form = new LinearLayout(host);
         form.setOrientation(LinearLayout.VERTICAL);
         form.setPadding(host.ui.dp(20), 0, host.ui.dp(20), host.ui.dp(20));
@@ -1206,7 +1209,7 @@ public class Profile {
             prefs.edit().putString("full_name:" + host.currentStudentEmail, fullName)
                     .putString("course:" + host.currentStudentEmail, updatedCourse)
                     .putString("year:" + host.currentStudentEmail, studyYear).apply();
-            host.getSharedPreferences(host.PREFS, Context.MODE_PRIVATE).edit().putString("student_name", fullName).apply();
+            com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS).edit().putString("student_name", fullName).apply();
             new AuthRepository().updateProfile(CloudSync.uid(host), host.currentStudentEmail, fullName,
                     updatedCourse, studyYear, new AuthRepository.SimpleCallback() {
                         @Override public void onOk() { }

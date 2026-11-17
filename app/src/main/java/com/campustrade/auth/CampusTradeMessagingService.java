@@ -46,9 +46,9 @@ public class CampusTradeMessagingService extends FirebaseMessagingService {
             if (message.getNotification().getBody() != null) body = message.getNotification().getBody();
         }
 
-        SharedPreferences session = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE);
+        SharedPreferences session = com.campustrade.auth.data.SecurePrefs.get(this, MainActivity.PREFS);
         String email = session.getString("student_email", "");
-        SharedPreferences settings = getSharedPreferences(MainActivity.PREFS + "_settings_" + email, Context.MODE_PRIVATE);
+        SharedPreferences settings = com.campustrade.auth.data.SecurePrefs.get(this, MainActivity.PREFS + "_settings_" + email);
         boolean pushEnabled = settings.getBoolean("push", true);
         boolean screenPrivacy = settings.getBoolean("screen_privacy", false);
         if (!pushEnabled) return;
@@ -60,7 +60,7 @@ public class CampusTradeMessagingService extends FirebaseMessagingService {
         // the passcode-only admin session.
         if (chatCategory && "admin@campustrade.local".equals(peer) && !email.isEmpty()) {
             try {
-                SharedPreferences messagePrefs = getSharedPreferences(MainActivity.PREFS + "_messages", Context.MODE_PRIVATE);
+                SharedPreferences messagePrefs = com.campustrade.auth.data.SecurePrefs.get(this, MainActivity.PREFS + "_messages");
                 JSONArray messages = new JSONArray(messagePrefs.getString("messages", "[]"));
                 String remoteId = message.getMessageId() == null ? "" : message.getMessageId();
                 boolean duplicate = false;
@@ -144,7 +144,7 @@ public class CampusTradeMessagingService extends FirebaseMessagingService {
 
         if (!email.isEmpty()) {
             try {
-                SharedPreferences alertsPrefs = getSharedPreferences(MainActivity.PREFS + "_alerts", Context.MODE_PRIVATE);
+                SharedPreferences alertsPrefs = com.campustrade.auth.data.SecurePrefs.get(this, MainActivity.PREFS + "_alerts");
                 JSONArray data = new JSONArray(alertsPrefs.getString(email, "[]"));
                 data.put(new JSONObject().put("title", title).put("body", body).put("time", System.currentTimeMillis())
                         .put("category", category).put("read", false).put("peer", peer)

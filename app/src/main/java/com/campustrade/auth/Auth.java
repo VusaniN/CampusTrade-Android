@@ -424,7 +424,7 @@ public class Auth {
                     return;
                 }
                 host.authSubmitting = false;
-                host.getSharedPreferences(host.PREFS, Context.MODE_PRIVATE).edit().putBoolean("keep_logged_in", keep).apply();
+                com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS).edit().putBoolean("keep_logged_in", keep).apply();
                 host.currentUid = uid;
                 CloudSync.directoryPut(host, uid, loginEmail);
                 repo.loadUser(uid, new AuthRepository.UserCallback() {
@@ -463,10 +463,10 @@ public class Auth {
                         }
                         String name = (user.getStuName() != null && !user.getStuName().isEmpty())
                                 ? user.getStuName()
-                                : host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE)
+                                : com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles")
                                         .getString("full_name:" + loginEmail, loginEmail);
                         android.content.SharedPreferences.Editor profileEdit =
-                                host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE).edit();
+                                com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles").edit();
                         if (user.getCourse() != null && !user.getCourse().isEmpty()) {
                             profileEdit.putString("course:" + loginEmail, user.getCourse());
                         }
@@ -495,7 +495,7 @@ public class Auth {
                     }
                     @Override public void onBad(String message) {
                         if (host.isDestroyed() || host.isFinishing()) return;
-                        String name = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE)
+                        String name = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles")
                                 .getString("full_name:" + loginEmail, loginEmail);
                         CloudSync.saveSession(host, uid, loginEmail, name);
                         completeAuth(loginEmail, name);
@@ -534,13 +534,13 @@ public class Auth {
         host.currentStudentName = fullName.trim();
         // Keep a local record that this account accepted the current terms
         // before entering the app. The checkbox is required on every login.
-        host.getSharedPreferences(host.PREFS + "_terms", Context.MODE_PRIVATE).edit()
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_terms").edit()
                 .putLong("accepted_at:" + email, System.currentTimeMillis())
                 .putString("version:" + email, "1.5.2")
                 .apply();
         // Names are saved per email, so they survive logout.
         android.content.SharedPreferences.Editor profileEdit =
-                host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE).edit()
+                com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles").edit()
                 .putString("full_name:" + email, host.currentStudentName)
                 .putLong("last_active:" + email, System.currentTimeMillis());
         if (!host.selectedCourse.isEmpty()) {
@@ -550,7 +550,7 @@ public class Auth {
             profileEdit.putString("year:" + email, host.selectedYear);
         }
         profileEdit.apply();
-        host.getSharedPreferences(host.PREFS, Context.MODE_PRIVATE).edit()
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS).edit()
                 .putString("student_email", email)
                 .putString("student_name", host.currentStudentName)
                 .putBoolean("signed_in", true).apply();

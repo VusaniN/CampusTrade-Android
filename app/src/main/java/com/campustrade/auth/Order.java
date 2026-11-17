@@ -3032,7 +3032,7 @@ public class Order {
     }
     // Orders are saved as JSON; skip a bad record.
     public void loadTransactions() {
-        String saved = host.getSharedPreferences(host.PREFS + "_orders", Context.MODE_PRIVATE).getString("records", "[]");
+        String saved = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_orders").getString("records", "[]");
         try {
             JSONArray records = new JSONArray(saved);
             boolean skipped = false;
@@ -3135,7 +3135,7 @@ public class Order {
                     .put("invoiceNumber", order.invoiceNumber).put("invoiceFinalizedAt", order.invoiceFinalizedAt)
                     .put("createdTime", order.createdMillis()));
         } catch (org.json.JSONException e) { return false; }
-        return host.getSharedPreferences(host.PREFS + "_orders", Context.MODE_PRIVATE).edit().putString("records", records.toString()).commit();
+        return com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_orders").edit().putString("records", records.toString()).commit();
     }
 
     public void showCheckoutConfirm(MainActivity.Product product, String quotedPrice, String method, String bank,

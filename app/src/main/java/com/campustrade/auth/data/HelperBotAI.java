@@ -1,8 +1,5 @@
 package com.campustrade.auth.data;
 
-import com.campustrade.auth.BuildConfig;
-
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -128,82 +125,8 @@ public final class HelperBotAI {
             callback.onFailure("Empty question");
             return;
         }
-        if (BuildConfig.HELPER_AI_KEY == null || BuildConfig.HELPER_AI_KEY.trim().isEmpty()
-                || BuildConfig.HELPER_AI_URL == null || BuildConfig.HELPER_AI_URL.trim().isEmpty()
-                || BuildConfig.HELPER_AI_MODEL == null || BuildConfig.HELPER_AI_MODEL.trim().isEmpty()) {
-            askProxy(prompt, callback);
-            return;
-        }
-        Thread worker = new Thread(() -> {
-            HttpURLConnection connection = null;
-            try {
-                JSONArray messages = new JSONArray();
-                messages.put(new JSONObject().put("role", "system").put("content", SYSTEM_PROMPT));
-                messages.put(new JSONObject().put("role", "user").put("content", prompt));
-                JSONObject body = new JSONObject()
-                        .put("model", BuildConfig.HELPER_AI_MODEL.trim())
-                        .put("messages", messages)
-                        .put("max_tokens", 420)
-                        .put("temperature", 0.4);
-
-                URL url = new URL(BuildConfig.HELPER_AI_URL.trim());
-                connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("POST");
-                connection.setConnectTimeout(12000);
-                connection.setReadTimeout(20000);
-                connection.setDoOutput(true);
-                connection.setRequestProperty("Authorization",
-                        "Bearer " + BuildConfig.HELPER_AI_KEY.trim());
-                connection.setRequestProperty("Content-Type", "application/json");
-                connection.setRequestProperty("Accept", "application/json");
-                connection.setRequestProperty("HTTP-Referer", "https://campustrade.app");
-                connection.setRequestProperty("X-Title", "CampusTrade Helper");
-
-                byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
-                try (OutputStream out = connection.getOutputStream()) {
-                    out.write(payload);
-                }
-
-                int status = connection.getResponseCode();
-                InputStream stream = status >= 200 && status < 300
-                        ? connection.getInputStream() : connection.getErrorStream();
-                if (stream == null) {
-                    callback.onFailure("Helper AI HTTP " + status);
-                    return;
-                }
-                StringBuilder raw = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) raw.append(line);
-                }
-                if (status < 200 || status >= 300) {
-                    callback.onFailure("Helper AI HTTP " + status);
-                    return;
-                }
-
-                JSONObject response = new JSONObject(raw.toString());
-                JSONArray choices = response.optJSONArray("choices");
-                if (choices == null || choices.length() == 0) {
-                    callback.onFailure("Helper AI returned no choices");
-                    return;
-                }
-                JSONObject message = choices.getJSONObject(0).optJSONObject("message");
-                String reply = message == null || message.isNull("content")
-                        ? "" : message.optString("content", "").trim();
-                if (reply.isEmpty() || reply.equalsIgnoreCase("null") || reply.equalsIgnoreCase("none")) {
-                    callback.onFailure("Helper AI returned an empty answer");
-                    return;
-                }
-                if (reply.length() > 1400) reply = reply.substring(0, 1400).trim() + "…";
-                callback.onReply(reply);
-            } catch (Exception e) {
-                callback.onFailure(e.getMessage() == null ? "Helper AI unavailable" : e.getMessage());
-            } finally {
-                if (connection != null) connection.disconnect();
-            }
-        }, "campus-helper-ai");
-        worker.setDaemon(true);
-        worker.start();
+        // Always use the signed-in relay. Never embed a provider key in the APK.
+        askProxy(prompt, callback);
     }
 
     /** Calls the existing CampusTrade helper relay using the signed-in Firebase user. */
@@ -235,6 +158,10 @@ public final class HelperBotAI {
                     connection.setReadTimeout(30000);
                     connection.setDoOutput(true);
                     connection.setRequestProperty("Authorization", "Bearer " + token);
+                    String appCheck = RelaySecurity.appCheckToken();
+                    if (!appCheck.isEmpty()) {
+                        connection.setRequestProperty("X-Firebase-AppCheck", appCheck);
+                    }
                     connection.setRequestProperty("Content-Type", "application/json");
                     connection.setRequestProperty("Accept", "application/json");
                     try (OutputStream out = connection.getOutputStream()) {

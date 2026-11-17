@@ -43,7 +43,7 @@ public class Notification {
     // Each student has a list; keep the newest 100. orderId lets an order alert
     // open the exact order instead of merely the Payments tab.
     void addNotification(String email, String title, String body, String category, String peer, String orderId) {
-        SharedPreferences prefs = host.getSharedPreferences(host.PREFS + "_alerts", Context.MODE_PRIVATE);
+        SharedPreferences prefs = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_alerts");
         try {
             JSONArray data = new JSONArray(prefs.getString(email, "[]"));
             data.put(new JSONObject().put("title", title).put("body", body).put("time", System.currentTimeMillis())
@@ -82,6 +82,10 @@ public class Notification {
                     connection = (java.net.HttpURLConnection) url.openConnection();
                     connection.setRequestMethod("POST");
                     connection.setRequestProperty("Authorization", "Bearer " + idToken);
+                    String appCheck = com.campustrade.auth.data.RelaySecurity.appCheckToken();
+                    if (!appCheck.isEmpty()) {
+                        connection.setRequestProperty("X-Firebase-AppCheck", appCheck);
+                    }
                     connection.setRequestProperty("Content-Type", "application/json");
                     connection.setDoOutput(true);
                     connection.setConnectTimeout(10000);
@@ -124,7 +128,7 @@ public class Notification {
 
     public JSONArray notificationItems() {
         try {
-            return new JSONArray(host.getSharedPreferences(host.PREFS + "_alerts", Context.MODE_PRIVATE).getString(host.currentStudentEmail, "[]"));
+            return new JSONArray(com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_alerts").getString(host.currentStudentEmail, "[]"));
         } catch (org.json.JSONException e) { return new JSONArray(); }
     }
 
@@ -139,7 +143,7 @@ public class Notification {
     }
 
     public void saveNotificationItems(JSONArray items) {
-        host.getSharedPreferences(host.PREFS + "_alerts", Context.MODE_PRIVATE).edit().putString(host.currentStudentEmail, items.toString()).apply();
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_alerts").edit().putString(host.currentStudentEmail, items.toString()).apply();
     }
 
     public boolean isOrderCategory(String category) {

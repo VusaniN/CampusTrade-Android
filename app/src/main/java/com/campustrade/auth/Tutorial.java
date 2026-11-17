@@ -31,7 +31,7 @@ public final class Tutorial {
     public static void showOnboarding(MainActivity host) {
         if (host == null || host.currentStudentEmail.isEmpty()) return;
         String key = "seen:" + host.currentStudentEmail;
-        if (host.getSharedPreferences(host.PREFS + "_tutorial", android.content.Context.MODE_PRIVATE)
+        if (com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_tutorial")
                 .getBoolean(key, false)) return;
         host.getWindow().getDecorView().postDelayed(() -> show(host), 700);
     }
@@ -135,7 +135,7 @@ public final class Tutorial {
 
     private static void markSeen(MainActivity host) {
         if (host.currentStudentEmail.isEmpty()) return;
-        host.getSharedPreferences(host.PREFS + "_tutorial", android.content.Context.MODE_PRIVATE)
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_tutorial")
                 .edit().putBoolean("seen:" + host.currentStudentEmail, true).apply();
     }
 }

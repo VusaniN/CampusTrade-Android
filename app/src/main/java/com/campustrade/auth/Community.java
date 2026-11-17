@@ -202,7 +202,7 @@ public class Community {
 
     /** Suggest classmates, same course and year first. */
     public void loadSuggestions(LinearLayout row) {
-        SharedPreferences profilePrefs = host.getSharedPreferences(host.PREFS + "_profiles", Context.MODE_PRIVATE);
+        SharedPreferences profilePrefs = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles");
         final String myCourse = profilePrefs.getString("course:" + host.currentStudentEmail, "");
         final String myYear = profilePrefs.getString("year:" + host.currentStudentEmail, "");
         final String uid = CloudSync.uid(host);

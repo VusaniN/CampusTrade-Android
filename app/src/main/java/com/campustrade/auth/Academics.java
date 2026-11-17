@@ -347,7 +347,7 @@ public class Academics {
     public ArrayList<MainActivity.AcademicItem> academicItems() {
         ArrayList<MainActivity.AcademicItem> items = new ArrayList<>();
         try {
-            JSONArray data = new JSONArray(host.getSharedPreferences(host.PREFS + "_academics", Context.MODE_PRIVATE).getString(host.currentStudentEmail, "[]"));
+            JSONArray data = new JSONArray(com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_academics").getString(host.currentStudentEmail, "[]"));
             for (int i = 0; i < data.length(); i++) {
                 JSONObject item = data.getJSONObject(i);
                 items.add(new MainActivity.AcademicItem(item.getString("id"), item.getString("kind"), item.getString("module"),
@@ -381,7 +381,7 @@ public class Academics {
                         .put("end", item.end).put("location", item.location).put("saved", item.saved));
             } catch (org.json.JSONException e) { return false; }
         }
-        return host.getSharedPreferences(host.PREFS + "_academics", Context.MODE_PRIVATE).edit().putString(host.currentStudentEmail, data.toString()).commit();
+        return com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_academics").edit().putString(host.currentStudentEmail, data.toString()).commit();
     }
 
     // Show one item full page; group items need membership first.

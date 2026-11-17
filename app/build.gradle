@@ -3,24 +3,37 @@ plugins {
     id "com.google.gms.google-services"
 }
 
-// Optional live helper AI. Put the key, endpoint and model in local.properties
-// or the environment. Without them the helper uses its offline answers.
+// Release signing is optional locally. CI or a release machine can provide
+// these through local.properties or environment variables.
 def localProps = new Properties()
 def localPropsFile = rootProject.file("local.properties")
 if (localPropsFile.exists()) localProps.load(new FileInputStream(localPropsFile))
-def helperKey = (localProps.getProperty("CAMPUSTRADE_HELPER_KEY")
-        ?: System.getenv("CAMPUSTRADE_HELPER_KEY") ?: "").toString()
-def helperUrl = (localProps.getProperty("CAMPUSTRADE_HELPER_URL")
-        ?: System.getenv("CAMPUSTRADE_HELPER_URL") ?: "").toString()
-def helperModel = (localProps.getProperty("CAMPUSTRADE_HELPER_MODEL")
-        ?: System.getenv("CAMPUSTRADE_HELPER_MODEL") ?: "").toString()
-def asBuildConfigString = { String value ->
-    "\"${value.replace('\\', '\\\\').replace('"', '\\"')}\""
-}
+def releaseStorePath = (localProps.getProperty("CAMPUSTRADE_KEYSTORE_PATH")
+        ?: System.getenv("CAMPUSTRADE_KEYSTORE_PATH") ?: "").toString()
+def releaseStorePassword = (localProps.getProperty("CAMPUSTRADE_KEYSTORE_PASSWORD")
+        ?: System.getenv("CAMPUSTRADE_KEYSTORE_PASSWORD") ?: "").toString()
+def releaseKeyAlias = (localProps.getProperty("CAMPUSTRADE_KEY_ALIAS")
+        ?: System.getenv("CAMPUSTRADE_KEY_ALIAS") ?: "").toString()
+def releaseKeyPassword = (localProps.getProperty("CAMPUSTRADE_KEY_PASSWORD")
+        ?: System.getenv("CAMPUSTRADE_KEY_PASSWORD") ?: "").toString()
+def hasReleaseSigning = !releaseStorePath.isEmpty() && !releaseStorePassword.isEmpty()
+        && !releaseKeyAlias.isEmpty() && !releaseKeyPassword.isEmpty()
+        && rootProject.file(releaseStorePath).exists()
 
 android {
     namespace "com.campustrade.auth"
     compileSdk 34
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
 
     defaultConfig {
         applicationId "com.campustrade.auth"
@@ -28,9 +41,6 @@ android {
         targetSdk 34
         versionCode 9
         versionName "1.5.3"
-        buildConfigField "String", "HELPER_AI_KEY", asBuildConfigString(helperKey)
-        buildConfigField "String", "HELPER_AI_URL", asBuildConfigString(helperUrl)
-        buildConfigField "String", "HELPER_AI_MODEL", asBuildConfigString(helperModel)
     }
 
     buildFeatures {
@@ -59,6 +69,7 @@ android {
         release {
             // Admin tools never exist in release builds.
             buildConfigField "String", "ADMIN_PASSCODE", "\"\""
+            if (hasReleaseSigning) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
@@ -67,10 +78,15 @@ android {
 
 dependencies {
     implementation 'androidx.core:core:1.12.0'
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     implementation platform('com.google.firebase:firebase-bom:33.1.2')
     implementation 'com.google.firebase:firebase-auth'
     implementation 'com.google.firebase:firebase-firestore'
     implementation 'com.google.firebase:firebase-messaging'
+    implementation 'com.google.firebase:firebase-appcheck'
+    implementation 'com.google.firebase:firebase-appcheck-debug'
+    implementation 'com.google.firebase:firebase-appcheck-playintegrity'
+    implementation 'com.google.android.play:integrity:1.3.0'
     implementation 'com.github.bumptech.glide:glide:4.16.0'
 
     testImplementation 'junit:junit:4.13.2'

@@ -236,7 +236,7 @@ public class Inbox {
 
     // Save the marketplace flag so the filter survives a restart.
     public boolean isMarketplaceChat(String peer) {
-        return host.getSharedPreferences(host.PREFS + "_messages", Context.MODE_PRIVATE).getBoolean("market:" + marketplaceChatKey(peer), false);
+        return com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages").getBoolean("market:" + marketplaceChatKey(peer), false);
     }
 
     /** Admin replies use a reserved peer id and must always show as "Admin". */
@@ -298,7 +298,7 @@ public class Inbox {
     public void cloudSendFailed(String chatId, String peerUid, String message) {
         // If the saved chat ID fails, drop it and look it up again.
         if (chatId.equals(cachedChatId(peerUid))) {
-            host.getSharedPreferences(host.PREFS + "_chats", Context.MODE_PRIVATE).edit().remove("chat:" + peerUid).apply();
+            com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_chats").edit().remove("chat:" + peerUid).apply();
         }
         Toast.makeText(host, "Saved on this phone, but it hasn't sent yet: "
                 + (message == null ? "check your connection" : message), Toast.LENGTH_LONG).show();
@@ -306,12 +306,12 @@ public class Inbox {
 
     public String cachedChatId(String peerUid) {
         if (peerUid == null || peerUid.isEmpty()) return "";
-        return host.getSharedPreferences(host.PREFS + "_chats", Context.MODE_PRIVATE).getString("chat:" + peerUid, "");
+        return com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_chats").getString("chat:" + peerUid, "");
     }
 
     public void cacheChatId(String peerUid, String chatId) {
         if (peerUid == null || peerUid.isEmpty() || chatId == null || chatId.isEmpty()) return;
-        host.getSharedPreferences(host.PREFS + "_chats", Context.MODE_PRIVATE).edit().putString("chat:" + peerUid, chatId).apply();
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_chats").edit().putString("chat:" + peerUid, chatId).apply();
     }
 
     // Replace email keys with student IDs so one person stays one chat.
@@ -332,7 +332,7 @@ public class Inbox {
             }
         }
         // Keep the marketplace filter on the chat after the key changes.
-        SharedPreferences prefs = host.getSharedPreferences(host.PREFS + "_messages", Context.MODE_PRIVATE);
+        SharedPreferences prefs = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages");
         if (prefs.getBoolean("market:" + marketplaceChatKey(from), false)) {
             prefs.edit().putBoolean("market:" + marketplaceChatKey(to), true).apply();
         }
@@ -944,7 +944,7 @@ public class Inbox {
 
     public void loadMessages() {
         try {
-            JSONArray data = new JSONArray(host.getSharedPreferences(host.PREFS + "_messages", Context.MODE_PRIVATE).getString("messages", "[]"));
+            JSONArray data = new JSONArray(com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages").getString("messages", "[]"));
             for (int i = 0; i < data.length(); i++) {
                 JSONObject m = data.getJSONObject(i);
                 host.chatMessages.add(new MainActivity.ChatMessage(m.getString("sender"), m.getString("recipient"),
@@ -967,6 +967,6 @@ public class Inbox {
                 data.put(item);
             } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
         }
-        host.getSharedPreferences(host.PREFS + "_messages", Context.MODE_PRIVATE).edit().putString("messages", data.toString()).apply();
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages").edit().putString("messages", data.toString()).apply();
     }
 }

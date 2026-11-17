@@ -16,7 +16,7 @@ public final class FeatureStore {
 
     // Load saved JSON; a broken file becomes empty.
     public FeatureStore(Context context) {
-        prefs = context.getSharedPreferences("campustrade_community", Context.MODE_PRIVATE);
+        prefs = com.campustrade.auth.data.SecurePrefs.get(context, "campustrade_community");
         try { data = decode(new JSONObject(prefs.getString("records", "{}"))); }
         catch (JSONException e) { readable = false; data = new CampusFeatures(); }
     }

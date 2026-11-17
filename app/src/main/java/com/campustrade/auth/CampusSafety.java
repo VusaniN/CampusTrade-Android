@@ -9,8 +9,8 @@ final class CampusSafety {
     private final SharedPreferences prefs;
     private final SharedPreferences disputes;
     CampusSafety(Context context) {
-        prefs = context.getSharedPreferences("campustrade_safety", Context.MODE_PRIVATE);
-        disputes = context.getSharedPreferences("campustrade_community_tools", Context.MODE_PRIVATE);
+        prefs = com.campustrade.auth.data.SecurePrefs.get(context, "campustrade_safety");
+        disputes = com.campustrade.auth.data.SecurePrefs.get(context, "campustrade_community_tools");
     }
     private static String email(String value) { return value.trim().toLowerCase(Locale.ROOT); }
     boolean blocks(String actor, String peer) { return blocked(actor).contains(email(peer)); }

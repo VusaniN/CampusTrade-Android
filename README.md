@@ -158,9 +158,13 @@ app/build/outputs/apk/debug/app-debug.apk
 gradlew.bat assembleRelease
 ```
 
-The unsigned release APK is generated at `app/build/outputs/apk/release/app-release-unsigned.apk`; sign it before distribution. Use JDK 17-21 for Gradle builds. Android lint cannot parse JDK 25 and fails with a `25.0.3` version error.
+The release APK is generated at `app/build/outputs/apk/release/`. It is signed when `CAMPUSTRADE_KEYSTORE_PATH`, `CAMPUSTRADE_KEYSTORE_PASSWORD`, `CAMPUSTRADE_KEY_ALIAS` and `CAMPUSTRADE_KEY_PASSWORD` are configured; otherwise it is unsigned and must be signed before distribution. Use JDK 17-21 for Gradle builds. Android lint cannot parse JDK 25 and fails with a `25.0.3` version error.
 
 `app/google-services.json` is included so the demo Firebase project can be used directly. Replace it with your own Firebase Android config for a separate deployment.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the release security checklist. The app uses Firebase Authentication, Firestore rules, App Check, EncryptedSharedPreferences, participant-only order/chat rules, owner-only uploads and a device-credential/password check for sensitive actions. No relay or provider secrets are compiled into the APK. App Check enforcement, Cloudinary preset restrictions and the relay-side token checks must be enabled in their respective consoles.
 
 ## Firestore rules
 
