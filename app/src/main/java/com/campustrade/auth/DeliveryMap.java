@@ -51,6 +51,7 @@ public final class DeliveryMap {
     private static Dialog activePage;
     private static MainActivity activeHost;
     private static String activeOrderId = "";
+    private static boolean liveMapReady;
     private static boolean sharing;
     private static final android.os.Handler expiryHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private static Runnable expiryRunnable;
@@ -121,6 +122,7 @@ public final class DeliveryMap {
         page.setOnDismissListener(d -> {
             if (activeMap == map) activeMap = null;
             activeHost = null;
+            liveMapReady = false;
         });
         useLocation.setOnClickListener(v -> {
             if (!hasLocationPermission(host)) {
@@ -174,6 +176,7 @@ public final class DeliveryMap {
         activeMap = map;
         activeHost = host;
         activeOrderId = order.id;
+        liveMapReady = false;
         destinationLat = 0;
         destinationLng = 0;
         destinationAddress = order.deliveryAddress == null ? "" : order.deliveryAddress.trim();
@@ -210,6 +213,7 @@ public final class DeliveryMap {
             if (activePage == page) activePage = null;
             activeStatus = null;
             activeOrderId = "";
+            liveMapReady = false;
         });
         share.setOnClickListener(v -> {
             if (sharing) {
@@ -419,7 +423,11 @@ public final class DeliveryMap {
         settings.setUseWideViewPort(true);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
-        map.setWebViewClient(new WebViewClient());
+        map.setWebViewClient(new WebViewClient() {
+            @Override public void onPageFinished(WebView view, String url) {
+                if (view == activeMap && !activeOrderId.isEmpty()) liveMapReady = true;
+            }
+        });
         map.setBackgroundColor(Color.rgb(238, 242, 238));
         return map;
     }
@@ -437,6 +445,17 @@ public final class DeliveryMap {
         double centerLng = hasDestination ? destinationLng : hasBuyer ? buyerLng : hasSeller ? sellerLng : DEFAULT_LNG;
         String buyer = hasBuyer ? "Buyer · updated " + host.messageTime(order.buyerLocationAt) : "";
         String seller = hasSeller ? "Seller · updated " + host.messageTime(order.sellerLocationAt) : "";
+        if (liveMapReady && map == activeMap) {
+            String js = "ctUpdate("
+                    + coord(hasDestination ? destinationLat : 0) + ","
+                    + coord(hasDestination ? destinationLng : 0) + ","
+                    + coord(buyerLat) + "," + coord(buyerLng) + ","
+                    + coord(sellerLat) + "," + coord(sellerLng) + ","
+                    + JSONObject.quote(buyer) + "," + JSONObject.quote(seller) + ");";
+            map.evaluateJavascript(js, null);
+            return;
+        }
+        liveMapReady = false;
         map.loadDataWithBaseURL("https://www.openstreetmap.org/",
                 html(centerLat, centerLng, hasDestination ? destinationLat : 0,
                         hasDestination ? destinationLng : 0, buyerLat, buyerLng, sellerLat, sellerLng,
@@ -465,10 +484,11 @@ public final class DeliveryMap {
         String addressHtml = escapeHtml(address == null || address.isEmpty() ? "Delivery area" : address);
         String buyerLabel = JSONObject.quote(buyer == null ? "" : buyer);
         String sellerLabel = JSONObject.quote(seller == null ? "" : seller);
-        return "<!doctype html><html><head><meta charset=\"utf-8\">"
-                + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no\">"
+        return "<!doctype html><html><head><meta charset='utf-8'>"
+                + "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'>"
                 + "<style>html,body,#map{height:100%;margin:0;overflow:hidden;background:#e8eee9;font-family:sans-serif}"
                 + "#tiles{position:absolute;inset:0;overflow:hidden;background:#e8eee9}"
+                + "#markers{position:absolute;inset:0;pointer-events:none}"
                 + ".tile{position:absolute;width:256px;height:256px;user-select:none;-webkit-user-drag:none}"
                 + ".marker{position:absolute;z-index:30;width:28px;height:28px;margin-left:-14px;margin-top:-14px;border-radius:50%;"
                 + "border:4px solid #fff;box-shadow:0 0 0 10px rgba(47,166,125,.18),0 4px 12px rgba(0,0,0,.25)}"
@@ -479,36 +499,64 @@ public final class DeliveryMap {
                 + "box-shadow:0 4px 16px rgba(0,0,0,.12)}.muted{color:#65756d;font-size:10px;margin-top:3px}"
                 + ".key{display:flex;gap:12px;margin-top:6px;font-size:10px;color:#65756d}"
                 + ".dot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:4px}"
+                + ".zoom{position:absolute;z-index:700;right:12px;bottom:38px;display:flex;flex-direction:column;gap:8px}"
+                + ".zoom button{width:44px;height:44px;border-radius:12px;border:1px solid #d7dfd9;background:rgba(255,255,255,.96);"
+                + "font-size:22px;line-height:1;font-weight:700;color:#1b2c25;box-shadow:0 4px 14px rgba(0,0,0,.18)}"
+                + ".zoom button.fit{font-size:11px;font-weight:700;letter-spacing:.2px}"
                 + ".attribution{position:absolute;z-index:600;right:8px;bottom:8px;background:rgba(255,255,255,.9);"
                 + "padding:3px 6px;border-radius:5px;font-size:9px;color:#45544c}</style></head>"
-                + "<body><div id=\"map\"><div id=\"tiles\"></div>"
-                + "<div class=\"label\">" + addressHtml
-                + "<div class=\"muted\">Live positions stop when the map closes.</div>"
-                + "<div class=\"key\"><span><i class=\"dot\" style=\"background:#e23a1d\"></i>Delivery</span>"
-                + "<span><i class=\"dot\" style=\"background:#2fa67d\"></i>Buyer</span>"
-                + "<span><i class=\"dot\" style=\"background:#3d8bd8\"></i>Seller</span></div></div>"
-                + "<div class=\"attribution\">© OpenStreetMap contributors</div>"
+                + "<body><div id='map'><div id='tiles'></div><div id='markers'></div>"
+                + "<div class='label'>" + addressHtml
+                + "<div class='muted'>Live positions stop when the map closes.</div>"
+                + "<div class='key'><span><i class='dot' style='background:#e23a1d'></i>Delivery</span>"
+                + "<span><i class='dot' style='background:#2fa67d'></i>Buyer</span>"
+                + "<span><i class='dot' style='background:#3d8bd8'></i>Seller</span></div></div>"
+                + "<div class='zoom'><button type='button' onclick='zoomBy(1)' aria-label='Zoom in'>+</button>"
+                + "<button type='button' onclick='zoomBy(-1)' aria-label='Zoom out'>&minus;</button>"
+                + "<button class='fit' type='button' onclick='fitBoth()' aria-label='Fit both locations'>Fit</button></div>"
+                + "<div class='attribution'>&copy; OpenStreetMap contributors</div>"
                 + "<script>"
-                + "var centerLat=" + coord(centerLat) + ",centerLng=" + coord(centerLng) + ",zoom=14;"
-                + "var map=document.getElementById('map'),tiles=document.getElementById('tiles');"
-                + "var W=map.clientWidth||window.innerWidth,H=map.clientHeight||window.innerHeight;"
+                + "var initialLat=" + coord(centerLat) + ",initialLng=" + coord(centerLng) + ";"
+                + "var centerLat=initialLat,centerLng=initialLng,zoom=14,autoFit=true,cx=0,cy=0,W=0,H=0;"
+                + "var map=document.getElementById('map'),tiles=document.getElementById('tiles'),markerLayer=document.getElementById('markers');"
+                + "var points={destination:{lat:" + coord(destinationLat) + ",lng:" + coord(destinationLng) + ",label:'Delivery address'},"
+                + "buyer:{lat:" + coord(buyerLat) + ",lng:" + coord(buyerLng) + ",label:" + buyerLabel + "},"
+                + "seller:{lat:" + coord(sellerLat) + ",lng:" + coord(sellerLng) + ",label:" + sellerLabel + "}};"
                 + "function tx(lon,z){return (lon+180)/360*Math.pow(2,z);}"
                 + "function ty(lat,z){var r=lat*Math.PI/180;return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*Math.pow(2,z);}"
-                + "var cx=tx(centerLng,zoom)*256,cy=ty(centerLat,zoom)*256;"
-                + "var x0=Math.floor((cx-W/2)/256),x1=Math.ceil((cx+W/2)/256);"
-                + "var y0=Math.floor((cy-H/2)/256),y1=Math.ceil((cy+H/2)/256),n=Math.pow(2,zoom);"
-                + "for(var x=x0;x<=x1;x++){for(var y=y0;y<=y1;y++){if(y<0||y>=n)continue;"
-                + "var img=document.createElement('img');img.className='tile';"
+                + "function valid(p){return p&&(Math.abs(p.lat)>0.000001||Math.abs(p.lng)>0.000001);}"
+                + "function size(){W=map.clientWidth||window.innerWidth||360;H=map.clientHeight||window.innerHeight||480;}"
+                + "function draw(){size();tiles.innerHTML='';markerLayer.innerHTML='';"
+                + "cx=tx(centerLng,zoom)*256;cy=ty(centerLat,zoom)*256;"
+                + "var x0=Math.floor((cx-W/2)/256),x1=Math.ceil((cx+W/2)/256),y0=Math.floor((cy-H/2)/256),y1=Math.ceil((cy+H/2)/256),n=Math.pow(2,zoom);"
+                + "for(var x=x0;x<=x1;x++){for(var y=y0;y<=y1;y++){if(y<0||y>=n)continue;var img=document.createElement('img');img.className='tile';"
                 + "img.src='https://tile.openstreetmap.org/'+zoom+'/'+((x%n+n)%n)+'/'+y+'.png';"
                 + "img.style.left=(x*256-cx+W/2)+'px';img.style.top=(y*256-cy+H/2)+'px';"
                 + "img.onerror=function(){this.style.opacity='0.15'};tiles.appendChild(img);}}"
-                + "function marker(lat,lng,label,cls){if(lat===0&&lng===0)return;"
-                + "var mx=tx(lng,zoom)*256-cx+W/2,my=ty(lat,zoom)*256-cy+H/2;"
-                + "var m=document.createElement('div');m.className='marker '+cls;m.title=label;"
-                + "m.style.left=mx+'px';m.style.top=my+'px';map.appendChild(m);}"
-                + "marker(" + coord(destinationLat) + "," + coord(destinationLng) + ",'Delivery address','destination');"
-                + "marker(" + coord(buyerLat) + "," + coord(buyerLng) + "," + buyerLabel + ",'buyer');"
-                + "marker(" + coord(sellerLat) + "," + coord(sellerLng) + "," + sellerLabel + ",'seller');"
+                + "function put(p,cls){if(!valid(p))return;var mx=tx(p.lng,zoom)*256-cx+W/2,my=ty(p.lat,zoom)*256-cy+H/2;"
+                + "var old=markerLayer.querySelectorAll('.marker');"
+                + "for(var i=0;i<old.length;i++){var ox=parseFloat(old[i].style.left),oy=parseFloat(old[i].style.top);"
+                + "if(Math.abs(mx-ox)<24&&Math.abs(my-oy)<24){mx+=(cls==='seller'?20:-20);my-=12;break;}}"
+                + "var m=document.createElement('div');m.className='marker '+cls;m.title=p.label||'';"
+                + "m.style.left=mx+'px';m.style.top=my+'px';markerLayer.appendChild(m);}"
+                + "put(points.destination,'destination');put(points.buyer,'buyer');put(points.seller,'seller');}"
+                + "function fitAll(){size();var pts=[];for(var k in points){if(valid(points[k]))pts.push(points[k]);}"
+                + "if(pts.length===0){centerLat=initialLat;centerLng=initialLng;zoom=14;return;}"
+                + "if(pts.length===1){centerLat=pts[0].lat;centerLng=pts[0].lng;zoom=15;return;}"
+                + "var minLat=pts[0].lat,maxLat=pts[0].lat,minLng=pts[0].lng,maxLng=pts[0].lng;"
+                + "for(var i=1;i<pts.length;i++){minLat=Math.min(minLat,pts[i].lat);maxLat=Math.max(maxLat,pts[i].lat);"
+                + "minLng=Math.min(minLng,pts[i].lng);maxLng=Math.max(maxLng,pts[i].lng);}"
+                + "centerLat=(minLat+maxLat)/2;centerLng=(minLng+maxLng)/2;"
+                + "for(var z=17;z>=3;z--){var w=Math.abs(tx(maxLng,z)-tx(minLng,z))*256;var h=Math.abs(ty(maxLat,z)-ty(minLat,z))*256;"
+                + "if(w<=W*0.68&&h<=H*0.55){zoom=z;return;}}zoom=3;}"
+                + "function zoomBy(d){autoFit=false;zoom=Math.max(3,Math.min(18,zoom+d));draw();}"
+                + "function fitBoth(){autoFit=true;fitAll();draw();}"
+                + "function ctUpdate(dLat,dLng,bLat,bLng,sLat,sLng,bLabel,sLabel){"
+                + "points.destination={lat:dLat,lng:dLng,label:'Delivery address'};"
+                + "points.buyer={lat:bLat,lng:bLng,label:bLabel||'Buyer'};"
+                + "points.seller={lat:sLat,lng:sLng,label:sLabel||'Seller'};"
+                + "if(autoFit)fitAll();draw();}"
+                + "fitAll();draw();"
                 + "</script></div></body></html>";
     }
 

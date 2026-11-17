@@ -59,6 +59,7 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Report an abusive or fake review from a seller profile
 - Real-time listing, order, offer and pickup updates when screens are open
 - Keyless OpenStreetMap delivery tracking, with live positions shared only while the map is open
+- Delivery map zoom controls and a Fit action that automatically frames the delivery, buyer and seller markers
 - Delivery maps and coordinates close permanently after delivery confirmation or cancellation
 - Collection proof can be captured by camera or chosen from the gallery; the seller must review it before the order completes
 
