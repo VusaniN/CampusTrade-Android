@@ -46,7 +46,7 @@ jobs:
           CAMPUSTRADE_KEY_ALIAS: ${{ secrets.CAMPUSTRADE_KEY_ALIAS }}
           CAMPUSTRADE_KEY_PASSWORD: ${{ secrets.CAMPUSTRADE_KEY_PASSWORD }}
         run: ./gradlew :app:assembleRelease --stacktrace
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: campus-trade-release
           path: app/build/outputs/apk/release/*.apk
