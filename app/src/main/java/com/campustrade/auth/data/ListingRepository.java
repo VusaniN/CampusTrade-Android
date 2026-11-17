@@ -43,7 +43,7 @@ public class ListingRepository {
     /** Use the local ID so retries update instead of duplicating. */
     public void createWithId(String docId, String sellerID, String sellerName, String listingN,
                              String description, double price, String category, String condition,
-                             String location, String delivery, String status, String imageURL,
+                             String specs, String location, String delivery, String status, String imageURL,
                              java.util.List<String> photos, String documentURL, String documentName,
                              String documentMime, long documentSize, IdCallback cb) {
         Map<String, Object> doc = new HashMap<>();
@@ -51,6 +51,7 @@ public class ListingRepository {
         doc.put("sellerName", sellerName != null ? sellerName : "");
         doc.put("listingN", listingN);
         doc.put("description", description);
+        doc.put("specs", specs != null ? specs : "");
         doc.put("price", price);
         doc.put("category", category);
         doc.put("condition", condition);
@@ -131,7 +132,7 @@ public class ListingRepository {
                        java.util.List<String> photos, String documentURL, String documentName,
                        String documentMime, long documentSize, IdCallback cb) {
         createWithId(null, sellerID, sellerName, listingN, description, price, category, condition,
-                location, delivery, status, imageURL, photos, documentURL, documentName,
+                "", location, delivery, status, imageURL, photos, documentURL, documentName,
                 documentMime, documentSize, cb);
     }
 

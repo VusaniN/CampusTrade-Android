@@ -110,13 +110,23 @@ public final class SellerDashboard {
         long cutoff = cutoff();
         int pending = 0, held = 0;
         BigDecimal salesValue = BigDecimal.ZERO;
+        BigDecimal returnedValue = BigDecimal.ZERO;
+        int approvedReturns = 0;
         for (MainActivity.TransactionRecord order : stats.orders) {
             if (order.createdMillis() < cutoff) continue;
             if (order.status.equals(MainActivity.TransactionRecord.REQUESTED)) pending++;
             else if (order.status.equals(MainActivity.TransactionRecord.HELD)) held++;
         }
-        // Keep the money figure on the same filtered set as the completed-sale count.
-        for (MainActivity.TransactionRecord order : completed) salesValue = salesValue.add(order.value());
+        // Keep the money figure on the same filtered set as the completed-sale
+        // count, then subtract every approved return from both.
+        for (MainActivity.TransactionRecord order : completed) {
+            salesValue = salesValue.add(order.value());
+            if ("Approved".equalsIgnoreCase(order.returnOutcome)) {
+                approvedReturns++;
+                returnedValue = returnedValue.add(order.value());
+                salesValue = salesValue.subtract(order.value());
+            }
+        }
 
         int active = 0, reserved = 0, sold = 0, other = 0, views = 0, favourites = 0;
         for (MainActivity.Product product : stats.products) {
@@ -136,19 +146,23 @@ public final class SellerDashboard {
         results.addView(first);
         LinearLayout second = host.ui.horizontal();
         second.addView(kpi("Completed sales", String.valueOf(completed.size()), "In selected period"), cell(false));
-        second.addView(kpi("Recorded value", "R" + money(salesValue), "Completed sales"), cell(true));
+        second.addView(kpi("Recorded value", "R" + money(salesValue), "After approved returns"), cell(true));
         results.addView(second);
         LinearLayout third = host.ui.horizontal();
         third.addView(kpi("Pending enquiries", String.valueOf(pending + held), pending + " new / " + held + " held"), cell(false));
         third.addView(kpi("Average rating", stats.ratingText(),
                 stats.ratingCount + " review" + (stats.ratingCount == 1 ? "" : "s")), cell(true));
         results.addView(third);
+        LinearLayout fourth = host.ui.horizontal();
+        fourth.addView(kpi("Approved returns", String.valueOf(approvedReturns), "Deducted from value"), cell(false));
+        fourth.addView(kpi("Returned value", "R" + money(returnedValue), "Not platform refunds"), cell(true));
+        results.addView(fourth);
 
         List<AnalyticsChart.Entry> sales = salesSeries(completed);
         if (hasChartData(sales)) {
             host.profile.settingsHeading(results, "Sales value over time");
             addChart(results, "Recorded sales value", sales, AnalyticsChart.Mode.LINE,
-                    "Completed orders only. Recorded value isn't platform revenue.");
+                    "Completed orders minus approved returns. Recorded value isn't platform revenue.");
         }
 
         List<AnalyticsChart.Entry> status = statusSeries(active, reserved, sold, other);
@@ -250,7 +264,10 @@ public final class SellerDashboard {
             String key = range.equals("7 days") || range.equals("30 days")
                     ? new SimpleDateFormat("dd MMM", Locale.getDefault()).format(new Date(order.createdMillis()))
                     : new SimpleDateFormat("MMM yy", Locale.getDefault()).format(new Date(order.createdMillis()));
-            grouped.put(key, grouped.getOrDefault(key, 0f) + order.value().floatValue());
+            float amount = "Approved".equalsIgnoreCase(order.returnOutcome) ? -order.value().floatValue()
+                    : order.value().floatValue();
+            grouped.put(key, Math.max(0f,
+                    (grouped.containsKey(key) ? grouped.get(key) : 0f) + amount));
         }
         return entries(grouped);
     }
@@ -259,7 +276,10 @@ public final class SellerDashboard {
         Map<String, Float> grouped = new LinkedHashMap<>();
         for (MainActivity.TransactionRecord order : completed) {
             String key = order.category == null || order.category.isEmpty() ? "Other" : order.category;
-            grouped.put(key, grouped.getOrDefault(key, 0f) + order.value().floatValue());
+            float amount = "Approved".equalsIgnoreCase(order.returnOutcome) ? -order.value().floatValue()
+                    : order.value().floatValue();
+            grouped.put(key, Math.max(0f,
+                    (grouped.containsKey(key) ? grouped.get(key) : 0f) + amount));
         }
         return entries(grouped);
     }
@@ -393,6 +413,10 @@ public final class SellerDashboard {
                     order.createdTime = time(doc.get("createdAt"));
                     String sellerName = doc.getString("sellerName");
                     if (sellerName != null) order.sellerName = sellerName;
+                    order.returnOutcome = doc.getString("returnOutcome") == null ? "" : doc.getString("returnOutcome");
+                    order.returnReason = doc.getString("returnReason") == null ? "" : doc.getString("returnReason");
+                    Long returnTime = doc.getLong("returnTime");
+                    order.returnTime = returnTime == null ? 0 : returnTime;
                     stats.orders.add(order);
                     if (status.equals(MainActivity.TransactionRecord.COMPLETED)
                             && order.createdMillis() >= cutoff) stats.completed.add(order);
@@ -430,7 +454,7 @@ public final class SellerDashboard {
         }
 
         String ratingText() {
-            return ratingAverage <= 0 ? "New seller" : String.format(Locale.ROOT, "%.1f / 5", ratingAverage);
+            return ratingAverage <= 0 ? "New seller" : RatingStars.of(ratingAverage);
         }
 
         private static String titleStatus(String cloud) {

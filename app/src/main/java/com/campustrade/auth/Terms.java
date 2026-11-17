@@ -22,7 +22,7 @@ public final class Terms {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(host.page);
         root.addView(host.ui.pageHeader("Terms & Conditions",
-                "CampusTrade v1.5.2 - Last updated 16 November 2026", page::dismiss));
+                "CampusTrade v1.5.3 - Last updated 16 November 2026", page::dismiss));
 
         ScrollView scroll = new ScrollView(host);
         LinearLayout content = new LinearLayout(host);

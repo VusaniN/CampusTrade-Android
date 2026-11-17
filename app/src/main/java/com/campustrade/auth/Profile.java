@@ -119,6 +119,8 @@ public class Profile {
 
         settingsHeading(content, "Support");
         LinearLayout support = host.ui.card(Color.WHITE, 16, 0);
+        support.addView(settingsOption("checklist", "App tutorial", "A quick tour for new and returning users", "Open", v -> Tutorial.show(host)));
+        host.ui.addMenuDivider(support);
         support.addView(settingsOption("chat", "Help & support", "Ask the helper or message the campus team", "Open", v -> showHelpSupport()));
         content.addView(support);
 
@@ -154,7 +156,7 @@ public class Profile {
                 "Read the rules, safety and liability terms", "Read", v -> Terms.show(host)));
         content.addView(legal);
 
-        TextView about = host.ui.bodyText("CampusTrade v1.5.2 - Eduvos campus marketplace", host.muted, 11);
+        TextView about = host.ui.bodyText("CampusTrade v1.5.3 - Eduvos campus marketplace", host.muted, 11);
         about.setGravity(Gravity.CENTER);
         about.setPadding(0, host.ui.dp(28), 0, host.ui.dp(16));
         content.addView(about);
@@ -358,7 +360,8 @@ public class Profile {
             }
             send.setEnabled(false);
             send.setText("Sending...");
-            new RatingRepository().report(uid, type.getSelectedItem().toString(), body,
+            new RatingRepository().report(uid, host.currentStudentEmail, host.currentStudentName,
+                    type.getSelectedItem().toString(), body,
                     new RatingRepository.DoneCallback() {
                         @Override public void onOk() {
                             if (host.isDestroyed() || host.isFinishing()) return;
@@ -493,8 +496,8 @@ public class Profile {
                     double total = 0;
                     for (com.campustrade.auth.model.Rating rating : ratings) total += rating.getRating();
                     if (ratings.isEmpty()) reviews.setText("No order reviews yet");
-                    else reviews.setText(String.format(Locale.ROOT, "Order rating: %.1f / 5 (%d)",
-                            total / ratings.size(), ratings.size()));
+                    else reviews.setText(String.format(Locale.ROOT, "Order rating: %s (%d)",
+                            RatingStars.of(total / ratings.size()), ratings.size()));
                 }
                 @Override public void onBad(String message) { }
             });
@@ -518,7 +521,7 @@ public class Profile {
         content.addView(logout, outParams);
     }
 
-    private void pickProfilePhoto() {
+    public void pickProfilePhoto() {
         Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         picker.addCategory(Intent.CATEGORY_OPENABLE);
         picker.setType("image/*");
@@ -759,8 +762,8 @@ public class Profile {
                                     "Reviews appear here after a completed order with this seller."));
                             ratingSummary.setText("No ratings yet");
                         } else {
-                            ratingSummary.setText(String.format(Locale.ROOT, "%.1f / 5 from %d review%s",
-                                    total / count, count, count == 1 ? "" : "s"));
+                            ratingSummary.setText(String.format(Locale.ROOT, "%s from %d review%s",
+                                    RatingStars.of(total / count), count, count == 1 ? "" : "s"));
                         }
                     }
                     @Override public void onBad(String message) {
@@ -1042,7 +1045,7 @@ public class Profile {
 
     private LinearLayout reviewCard(com.campustrade.auth.model.Rating rating, String reviewer, String targetEmail) {
         LinearLayout card = host.ui.card(Color.WHITE, 12, host.ui.dp(12));
-        card.addView(host.ui.bodyText(String.format(Locale.ROOT, "%.1f / 5", rating.getRating()), host.blue, 13));
+        card.addView(host.ui.bodyText(RatingStars.of(rating.getRating()), host.blue, 16));
         String comment = rating.getComment() == null ? "" : rating.getComment().trim();
         card.addView(host.ui.bodyText(reviewer + (comment.isEmpty() ? " left a rating." : ": " + comment), host.muted, 12));
         if (!rating.getReviewerID().equals(host.currentUid)) {
@@ -1075,7 +1078,7 @@ public class Profile {
             String text = host.ui.text(detail).trim();
             if (text.length() < 10) { detail.setError("Add a little more detail first"); return; }
             submitReport(targetEmail, "review:" + rating.getDocId(),
-                    "Review by " + reviewer + " (" + String.format(Locale.ROOT, "%.1f / 5", rating.getRating()) + ")",
+                    "Review by " + reviewer + " (" + RatingStars.of(rating.getRating()) + ")",
                     reason.getSelectedItem().toString(), text);
             sheet.dismiss();
         });
@@ -1100,6 +1103,8 @@ public class Profile {
         doc.put("reporterEmail", report.reporterEmail);
         doc.put("reporterName", report.reporterName);
         doc.put("reportedEmail", targetEmail);
+        doc.put("entityType", report.entityType());
+        doc.put("reportedId", report.productId);
         doc.put("productId", report.productId);
         doc.put("productTitle", report.productTitle);
         doc.put("reason", report.reason);
@@ -1111,6 +1116,32 @@ public class Profile {
                 .addOnFailureListener(error -> Toast.makeText(host,
                         "Report saved on this phone. It will reach the campus team when you are back online.",
                         Toast.LENGTH_LONG).show());
+        // Repeated or high-priority reports remove the listing from public view
+        // until a moderator reviews it.
+        if (!productId.startsWith("review:") && !productId.startsWith("user:")) {
+            MainActivity.Product reportedProduct = null;
+            for (MainActivity.Product product : host.products) {
+                if (product.id.equals(productId)) { reportedProduct = product; break; }
+            }
+            if (reportedProduct != null) {
+                int reportCount = 1;
+                for (MainActivity.ModerationReport existing : host.moderationReports) {
+                    if (existing.productId.equals(productId)) reportCount++;
+                }
+                if (report.priority.equals("High") || reportCount >= 2) {
+                    reportedProduct.hidden = true;
+                    if (host.market.saveProducts()) {
+                        host.market.cloudMirrorListing(reportedProduct, false);
+                    }
+                    if (reportedProduct.sellerEmail != null && !reportedProduct.sellerEmail.isEmpty()) {
+                        host.notification.addNotification(reportedProduct.sellerEmail, "Listing hidden",
+                                reportedProduct.title + " was hidden pending a moderation review.", "marketplace", "");
+                        host.notification.sendPush(reportedProduct.sellerEmail, "Listing hidden",
+                                reportedProduct.title + " was hidden pending a moderation review.");
+                    }
+                }
+            }
+        }
         host.notification.showCampusNotification("Report sent", "The campus team has it and will take a look.", "marketplace");
     }
 

@@ -260,12 +260,12 @@ public class Auth {
         staffAccess.setOnClickListener(v -> setAdminMode());
         form.addView(staffAccess);
 
-        host.loginTab.setOnClickListener(v -> setMode(false));
-        host.signupTab.setOnClickListener(v -> setMode(true));
-        host.adminTab.setOnClickListener(v -> setAdminMode());
-        host.passwordToggle.setOnClickListener(v -> host.ui.togglePassword(host.passwordInput, true));
-        host.confirmPasswordToggle.setOnClickListener(v -> host.ui.togglePassword(host.confirmPasswordInput, false));
-        host.termsCheck.setOnCheckedChangeListener((buttonView, isChecked) -> validateAuth());
+        if (host.loginTab != null) host.loginTab.setOnClickListener(v -> setMode(false));
+        if (host.signupTab != null) host.signupTab.setOnClickListener(v -> setMode(true));
+        if (host.adminTab != null) host.adminTab.setOnClickListener(v -> setAdminMode());
+        if (host.passwordToggle != null) host.passwordToggle.setOnClickListener(v -> host.ui.togglePassword(host.passwordInput, true));
+        if (host.confirmPasswordToggle != null) host.confirmPasswordToggle.setOnClickListener(v -> host.ui.togglePassword(host.confirmPasswordInput, false));
+        if (host.termsCheck != null) host.termsCheck.setOnCheckedChangeListener((buttonView, isChecked) -> validateAuth());
 
         TextWatcher watcher = new MainActivity.SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
@@ -564,6 +564,7 @@ public class Auth {
         host.startChatListeners();
         host.market.syncFavourites();
         host.safety.sync(host.currentStudentEmail, host.currentUid);
+        Tutorial.showOnboarding(host);
         int unread = host.inbox.unreadMessages();
         if (unread > 0) host.notification.showCampusNotification("New messages", "You have " + unread + " unread message(s).", "messages");
     }

@@ -1,10 +1,10 @@
 # CampusTrade
 
-CampusTrade is a student marketplace and campus companion built with Java and Firebase. This repository contains the final v1.5.2 Android app, including buying, selling, messaging, orders, study tools, returns and moderation.
+CampusTrade is a student marketplace and campus companion built with Java and Firebase. This repository contains the final v1.5.3 Android app, including buying, selling, messaging, orders, study tools, returns and moderation.
 
 ## Status
 
-- Version: 1.5.2
+- Version: 1.5.3
 - Platform: Android
 - Language: Java
 - Backend: Firebase Authentication and Cloud Firestore
@@ -19,6 +19,8 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Persistent sessions and protected screens
 - Editable name, course and year
 - Profile photo upload with Cloudinary
+- A profile photo is required before publishing a listing or checking out; drafts are still allowed
+- First-run app tutorial, with the same tour available from Settings → Support → App tutorial
 - Profile picture and member information on the profile screen
 - Public seller profile with active listings, completed sales, rating and reviews
 - Change password by email reset
@@ -55,7 +57,10 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Completed-order return requests: reason, seller approval or decline, buyer withdrawal and return status
 - Return settlements are arranged directly between students; CampusTrade does not process refunds
 - Report an abusive or fake review from a seller profile
-- Real-time order and chat listeners when the app is open
+- Real-time listing, order, offer and pickup updates when screens are open
+- Keyless OpenStreetMap delivery tracking, with live positions shared only while the map is open
+- Delivery maps and coordinates close permanently after delivery confirmation or cancellation
+- Collection proof can be captured by camera or chosen from the gallery; the seller must review it before the order completes
 
 ### Study groups
 
@@ -145,6 +150,14 @@ The APK is generated at:
 ```text
 app/build/outputs/apk/debug/app-debug.apk
 ```
+
+4. Build the release APK:
+
+```bat
+gradlew.bat assembleRelease
+```
+
+The unsigned release APK is generated at `app/build/outputs/apk/release/app-release-unsigned.apk`; sign it before distribution. Use JDK 17-21 for Gradle builds. Android lint cannot parse JDK 25 and fails with a `25.0.3` version error.
 
 `app/google-services.json` is included so the demo Firebase project can be used directly. Replace it with your own Firebase Android config for a separate deployment.
 

@@ -512,7 +512,7 @@ public class Community {
                                 java.util.List<String> readBy = (java.util.List<String>) doc.get("readBy");
                                 if (readBy != null) target.readBy.addAll(readBy);
                             }
-                            group.posts.sort((a, b) -> Long.compare(a.time, b.time));
+                            java.util.Collections.sort(group.posts, (a, b) -> Long.compare(a.time, b.time));
                         });
                     } catch (RuntimeException e) {
                         android.util.Log.w("CampusTrade", "group post merge failed: " + e.getMessage());
@@ -655,7 +655,7 @@ public class Community {
         catch (RuntimeException e) { Toast.makeText(host, e.getMessage(), Toast.LENGTH_SHORT).show(); return; }
         if (openGroupPage != null && openGroupPage.isShowing()) openGroupPage.dismiss();
         long now = System.currentTimeMillis();
-        long lastPostsPull = groupPostsPullAt.getOrDefault(id, 0L);
+        long lastPostsPull = groupPostsPullAt.containsKey(id) ? groupPostsPullAt.get(id) : 0L;
         if (g.members.contains(host.currentStudentEmail)
                 && !groupPostsPulling.contains(id) && now - lastPostsPull > 5000) {
             groupPostsPulling.add(id);

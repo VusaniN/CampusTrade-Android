@@ -45,7 +45,9 @@ public final class FeatureStore {
         for (CampusFeatures.Offer o : f.offers) offers.put(new JSONObject().put("id", o.id).put("listing", o.listing).put("buyer", o.buyer)
                 .put("seller", o.seller).put("amount", o.amount).put("turn", o.turn).put("state", o.state).put("created", o.created).put("expires", o.expires));
         for (CampusFeatures.Pickup p : f.pickups) pickups.put(new JSONObject().put("order", p.order).put("buyer", p.buyer).put("seller", p.seller)
-                .put("location", p.location).put("time", p.time).put("confirmed", new JSONArray(p.confirmed)));
+                .put("location", p.location).put("time", p.time).put("confirmed", new JSONArray(p.confirmed))
+                .put("revision", p.revision).put("updatedBy", p.updatedBy == null ? "" : p.updatedBy)
+                .put("updatedAt", p.updatedAt));
         for (CampusFeatures.Review r : f.reviews) reviews.put(new JSONObject().put("order", r.order).put("author", r.author).put("target", r.target)
                 .put("comment", r.comment).put("communication", r.communication).put("accuracy", r.accuracy).put("punctuality", r.punctuality));
         for (CampusFeatures.Group g : f.groups) {
@@ -78,7 +80,11 @@ public final class FeatureStore {
         for (int i = 0; i < a.length(); i++) {
             JSONObject r = a.getJSONObject(i); CampusFeatures.Pickup p = new CampusFeatures.Pickup();
             p.order = r.getString("order"); p.buyer = r.getString("buyer"); p.seller = r.getString("seller"); p.location = r.getString("location");
-            p.time = r.getLong("time"); strings(array(r, "confirmed"), p.confirmed); f.pickups.add(p);
+            p.time = r.getLong("time"); strings(array(r, "confirmed"), p.confirmed);
+            p.revision = r.optInt("revision", 1);
+            p.updatedBy = r.optString("updatedBy", "");
+            p.updatedAt = r.optLong("updatedAt", 0);
+            f.pickups.add(p);
         }
         a = array(root, "reviews");
         for (int i = 0; i < a.length(); i++) {

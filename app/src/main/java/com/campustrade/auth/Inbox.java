@@ -162,7 +162,7 @@ public class Inbox {
                 latest = m;
                 if (m.recipient.equals(host.currentStudentEmail) && !m.read) unread++;
             }
-            String fullName = host.studentName(peer);
+            String fullName = isAdminConversation(peer) ? "Admin" : host.studentName(peer);
             if (host.inboxUnreadOnly && unread == 0) continue;
             if (latest == null || !(peer + " " + fullName + " " + latest.body + " " + latest.senderName)
                     .toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT))) continue;
@@ -237,6 +237,18 @@ public class Inbox {
     // Save the marketplace flag so the filter survives a restart.
     public boolean isMarketplaceChat(String peer) {
         return host.getSharedPreferences(host.PREFS + "_messages", Context.MODE_PRIVATE).getBoolean("market:" + marketplaceChatKey(peer), false);
+    }
+
+    /** Admin replies use a reserved peer id and must always show as "Admin". */
+    public boolean isAdminConversation(String peer) {
+        if (peer == null) return false;
+        if (peer.equals("admin@campustrade.local")) return true;
+        for (MainActivity.ChatMessage message : host.chatMessages) {
+            if (!inConversation(message, peer)) continue;
+            if ("Admin".equalsIgnoreCase(message.senderName)
+                    || (message.body != null && message.body.startsWith("[Admin]"))) return true;
+        }
+        return false;
     }
 
     // Save the message here first; show a toast if the cloud send fails.
@@ -653,8 +665,10 @@ public class Inbox {
         TextView back = host.ui.textButton("Back");
         back.setOnClickListener(v -> dialog.dismiss());
         header.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, host.ui.dp(48)));
-        String conversationName = peer.equals(HelperBot.PEER) ? HelperBot.NAME : host.studentName(peer);
-        int avatarColor = peer.equals(HelperBot.PEER) ? host.blue : (peer.hashCode() & 1) == 0 ? host.blue : host.green;
+        String conversationName = isAdminConversation(peer) ? "Admin"
+                : peer.equals(HelperBot.PEER) ? HelperBot.NAME : host.studentName(peer);
+        int avatarColor = isAdminConversation(peer) ? host.blue
+                : peer.equals(HelperBot.PEER) ? host.blue : (peer.hashCode() & 1) == 0 ? host.blue : host.green;
         TextView avatar = host.ui.titleText(host.ui.initials(conversationName), avatarColor, 12);
         avatar.setGravity(Gravity.CENTER);
         avatar.setBackground(host.ui.round(avatarColor == host.blue ? Color.rgb(225, 236, 255) : Color.rgb(229, 247, 239), 999));
@@ -668,7 +682,8 @@ public class Inbox {
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
         heading.addView(title);
-        TextView typingStatus = host.ui.bodyText(peer.equals(HelperBot.PEER) ? "Virtual assistant"
+        TextView typingStatus = host.ui.bodyText(isAdminConversation(peer) ? "Campus moderator"
+                : peer.equals(HelperBot.PEER) ? "Virtual assistant"
                 : host.inbox.isMarketplaceChat(peer) ? "Marketplace conversation" : "Verified student", host.muted, 10);
         typingStatus.setSingleLine(true);
         heading.addView(typingStatus);
@@ -718,6 +733,8 @@ public class Inbox {
             String body = host.ui.text(message).trim();
             if (body.isEmpty()) return;
             String active = dialog.isShowing() && !host.openChatPeer.isEmpty() ? host.openChatPeer : peer;
+            boolean adminSender = host.adminAccount || host.adminAccess || host.adminOnlySession;
+            if (adminSender && !active.equals(HelperBot.PEER)) body = "[Admin] " + body;
             host.chatMessages.add(new MainActivity.ChatMessage(host.currentStudentEmail, active, host.currentStudentName, body, System.currentTimeMillis(), false));
             saveMessages();
             message.setText("");
@@ -918,6 +935,11 @@ public class Inbox {
         if (key.equals(chatDayKey(System.currentTimeMillis()))) return "Today";
         if (key.equals(chatDayKey(System.currentTimeMillis() - 24L * 60 * 60 * 1000))) return "Yesterday";
         return new SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(new Date(time));
+    }
+
+    public void reloadMessages() {
+        host.chatMessages.clear();
+        loadMessages();
     }
 
     public void loadMessages() {

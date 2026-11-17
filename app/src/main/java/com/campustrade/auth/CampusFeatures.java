@@ -72,8 +72,13 @@ public final class CampusFeatures {
         require(actor.equals(buyer) || actor.equals(seller), "This isn't your order");
         require(location.trim().length() >= 3 && time > now, "Choose a future time and public pickup location");
         Pickup p = pickup(order);
-        if (p == null) { p = new Pickup(); p.order = order; pickups.add(p); }
+        if (p == null) { p = new Pickup(); p.order = order; p.revision = 0; pickups.add(p); }
         p.buyer = buyer; p.seller = seller; p.location = location.trim(); p.time = time;
+        // A changed arrangement resets both confirmations and records who
+        // moved it, so the order history can show the revision.
+        p.revision++;
+        p.updatedBy = actor;
+        p.updatedAt = now;
         p.confirmed.clear(); p.confirmed.add(actor); return p;
     }
     public Pickup pickup(String order) { for (Pickup p : pickups) if (p.order.equals(order)) return p; return null; }
@@ -82,6 +87,9 @@ public final class CampusFeatures {
         Pickup p = pickup(order); actor = email(actor);
         require(p != null && (actor.equals(p.buyer) || actor.equals(p.seller)), "This isn't your pickup");
         p.confirmed.add(actor);
+        p.updatedBy = actor;
+        p.updatedAt = System.currentTimeMillis();
+        if (p.revision <= 0) p.revision = 1;
     }
     // Only the buyer and seller can review, once per order.
     public Review review(String order, String buyer, String seller, boolean completed, String actor,
@@ -171,6 +179,9 @@ public final class CampusFeatures {
     // A pickup is agreed only when both students confirm.
     public static final class Pickup {
         public String order, buyer, seller, location; public long time;
+        public int revision = 1;
+        public String updatedBy = "";
+        public long updatedAt = 0;
         public final LinkedHashSet<String> confirmed = new LinkedHashSet<>();
         public boolean agreed() { return confirmed.contains(buyer) && confirmed.contains(seller); }
     }

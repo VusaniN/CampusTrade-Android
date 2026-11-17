@@ -273,6 +273,12 @@ public class MainActivity extends Activity {
     static final int LISTING_PHOTO_REQUEST = 71;
     static final int LISTING_DOCUMENT_REQUEST = 73;
     static final int PROFILE_PHOTO_REQUEST = 74;
+    static final int COLLECTION_CAMERA_REQUEST = 76;
+    static final int COLLECTION_GALLERY_REQUEST = 77;
+    static final int LOCATION_PERMISSION_REQUEST = 83;
+    String pendingCollectionOrderId = "";
+    String notificationFilter = "All";
+    String adminReportFilter = "All";
     static final String[] DOCUMENT_MIME_TYPES = {
             "application/pdf",
             "application/msword",
@@ -371,6 +377,10 @@ public class MainActivity extends Activity {
                 showAppScreen(currentTab);
             }
         }
+        if (requestCode == LOCATION_PERMISSION_REQUEST) {
+            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            DeliveryMap.onPermissionResult(this, granted);
+        }
     }
 
     // Rebuild the current tab so no old views remain.
@@ -453,6 +463,25 @@ public class MainActivity extends Activity {
     boolean isSignedIn() {
         return !currentStudentEmail.isEmpty()
                 && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false);
+    }
+
+    boolean hasProfilePhoto() {
+        if (currentStudentEmail.isEmpty()) return false;
+        String image = getSharedPreferences(PREFS + "_profiles", MODE_PRIVATE)
+                .getString("profile_image:" + currentStudentEmail, "");
+        return image != null && !image.trim().isEmpty();
+    }
+
+    /** Returns false and opens the photo prompt when the profile is missing a picture. */
+    boolean requireProfilePhoto() {
+        if (hasProfilePhoto()) return true;
+        ui.dialog().setTitle("Profile photo required")
+                .setMessage("Add a clear photo of yourself before publishing a listing or purchasing an item. "
+                        + "This helps other students know who they are meeting.")
+                .setNegativeButton("Later", null)
+                .setPositiveButton("Add photo", (dialog, which) -> profile.pickProfilePhoto())
+                .show();
+        return false;
     }
 
     // Admin is a Firebase role; the debug passcode is an extra local check.
@@ -540,6 +569,8 @@ public class MainActivity extends Activity {
                     }
                 });
         startOrderListeners();
+        market.startLiveUpdates();
+        order.startLivePickups();
         saveFcmToken();
     }
 
@@ -569,7 +600,13 @@ public class MainActivity extends Activity {
                         return;
                     }
                     order.cloudPullOrders(() -> {
-                        if (!isDestroyed() && !isFinishing() && currentTab.equals("Payments")) showAppScreen("Payments");
+                        if (isDestroyed() || isFinishing()) return;
+                        String tab = currentTab;
+                        if (tab.equals("Payments") || tab.equals("Offers") || tab.equals("Home")
+                                || tab.equals("SellerDashboard") || tab.equals("AdminAnalytics")) {
+                            showAppScreen(tab);
+                        }
+                        order.refreshOpenOrder();
                     });
                 };
         ordersSellerListener = db.collection("orders").whereEqualTo("sellerId", uid).limit(30)
@@ -586,6 +623,8 @@ public class MainActivity extends Activity {
     // Remove listeners so they stop when the screen closes.
     void stopChatListeners() {
         stopOrderListeners();
+        market.stopLiveUpdates();
+        order.stopLivePickups();
         if (chatsBuyerListener != null) { chatsBuyerListener.remove(); chatsBuyerListener = null; }
         if (chatsSellerListener != null) { chatsSellerListener.remove(); chatsSellerListener = null; }
         for (com.google.firebase.firestore.ListenerRegistration listener : messageListeners) listener.remove();
@@ -642,6 +681,28 @@ public class MainActivity extends Activity {
                             });
                 });
             }).start();
+            return;
+        }
+        if (requestCode == COLLECTION_CAMERA_REQUEST || requestCode == COLLECTION_GALLERY_REQUEST) {
+            String orderId = pendingCollectionOrderId;
+            pendingCollectionOrderId = "";
+            if (resultCode != RESULT_OK || orderId == null || orderId.isEmpty()) {
+                order.collectionPhotoCancelled();
+                return;
+            }
+            Uri uri = null;
+            if (requestCode == COLLECTION_CAMERA_REQUEST) {
+                uri = order.pendingCollectionPhoto;
+            } else if (data != null) {
+                uri = data.getData();
+                if (uri != null) {
+                    try {
+                        getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    } catch (SecurityException ignored) {
+                    }
+                }
+            }
+            order.receiveCollectionPhoto(orderId, uri);
             return;
         }
         if (requestCode == LISTING_DOCUMENT_REQUEST) {
@@ -951,19 +1012,7 @@ public class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if ((!currentStudentEmail.isEmpty()
-                && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false))
-                && (intent.getBooleanExtra("open_inbox", false)
-                || intent.getBooleanExtra("open_notifications", false)
-                || intent.hasExtra("open_peer"))) {
-            if (intent.getBooleanExtra("open_notifications", false)) showAppScreen("Notifications");
-            else showAppScreen("Inbox");
-            String openPeer = intent.getStringExtra("open_peer");
-            if (openPeer != null && !openPeer.isEmpty()) inbox.showConversation(openPeer);
-            intent.removeExtra("open_inbox");
-            intent.removeExtra("open_notifications");
-            intent.removeExtra("open_peer");
-        }
+        handleNotificationIntent(intent);
     }
 
     // Check the real Firebase session, not just the saved flag.
@@ -1130,16 +1179,34 @@ public class MainActivity extends Activity {
     void handleNotificationIntent(Intent intent) {
         if (intent == null || currentStudentEmail.isEmpty()
                 || !getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("signed_in", false)) return;
-        if (intent.hasExtra("open_peer") || intent.getBooleanExtra("open_inbox", false)
-                || intent.getBooleanExtra("open_notifications", false)) {
-            if (intent.getBooleanExtra("open_notifications", false)) showAppScreen("Notifications");
-            else showAppScreen("Inbox");
-            String openPeer = intent.getStringExtra("open_peer");
+        boolean openOrders = intent.getBooleanExtra("open_orders", false);
+        boolean openNotifications = intent.getBooleanExtra("open_notifications", false);
+        boolean openInbox = intent.getBooleanExtra("open_inbox", false);
+        String openPeer = intent.getStringExtra("open_peer");
+        String openOrder = intent.getStringExtra("open_order");
+        String filter = intent.getStringExtra("open_notification_filter");
+        if (!openOrders && !openNotifications && !openInbox && (openPeer == null || openPeer.isEmpty())) return;
+
+        if (openInbox || (openPeer != null && !openPeer.isEmpty())) {
+            inbox.reloadMessages();
+            showAppScreen("Inbox");
             if (openPeer != null && !openPeer.isEmpty()) inbox.showConversation(openPeer);
-            intent.removeExtra("open_inbox");
-            intent.removeExtra("open_notifications");
-            intent.removeExtra("open_peer");
+        } else if (openOrders || (openOrder != null && !openOrder.isEmpty())) {
+            notificationFilter = "Orders";
+            TransactionRecord target = order.orderById(openOrder);
+            if (target != null) buyingOrders = target.isBuyer(currentStudentEmail);
+            showAppScreen("Payments");
+            if (target != null) order.showOrderDetails(target);
+        } else {
+            if (filter != null && !filter.isEmpty()) notificationFilter = filter;
+            showAppScreen("Notifications");
         }
+        intent.removeExtra("open_inbox");
+        intent.removeExtra("open_notifications");
+        intent.removeExtra("open_orders");
+        intent.removeExtra("open_order");
+        intent.removeExtra("open_peer");
+        intent.removeExtra("open_notification_filter");
     }
 
     @Override
@@ -1599,6 +1666,20 @@ public class MainActivity extends Activity {
         }
 
         boolean isOpen() { return state.equals("Open"); }
+        String entityType() {
+            if (productId.startsWith("review:")) return "review";
+            if (productId.startsWith("user:")) return "user";
+            if (productId.startsWith("listing:")) return "listing";
+            return productId.isEmpty() ? "general" : "listing";
+        }
+        String entityLabel() {
+            if (entityType().equals("review")) return "Review";
+            if (entityType().equals("user")) return "Student";
+            return "Listing";
+        }
+        String reportedEmail() {
+            return entityType().equals("user") && productId.length() > 5 ? productId.substring(5) : "";
+        }
         boolean close(boolean authorized, boolean dismiss) {
             if (!authorized || !isOpen()) return false;
             state = dismiss ? "Dismissed" : "Resolved";
@@ -1688,6 +1769,7 @@ public class MainActivity extends Activity {
         final String location;
         final String delivery;
         final String createdAt;
+        String specs = "";
         final ArrayList<Uri> photos = new ArrayList<>();
         final LinkedHashSet<String> savedBy = new LinkedHashSet<>();
         Uri documentUri = null;
@@ -1807,6 +1889,18 @@ public class MainActivity extends Activity {
         long payoutRequestedAt = 0;
         String payoutMethod = "Bank transfer", payoutSchedule = "On request";
         long createdTime = 0;
+        // Delivery, collection proof and invoice details.
+        String deliveryMethod = "Campus pickup";
+        String deliveryAddress = "";
+        double buyerLat = 0, buyerLng = 0, sellerLat = 0, sellerLng = 0;
+        long buyerLocationAt = 0, sellerLocationAt = 0;
+        String collectionPhotoUrl = "";
+        String collectionPhotoBy = "";
+        long collectionPhotoTime = 0;
+        String sellerVerifiedBy = "";
+        long sellerVerifiedTime = 0;
+        String invoiceNumber = "";
+        long invoiceFinalizedAt = 0;
 
         TransactionRecord(String id, String itemTitle, String amount, String method, String buyerName, String buyerPhone,
                 String reference, String paidAt, String sellerEmail, String buyerEmail, String category, String status) {
@@ -1853,13 +1947,28 @@ public class MainActivity extends Activity {
             if (status.equals(COMPLETED) && "Approved".equals(returnOutcome)) return "Return approved";
             if (status.equals(COMPLETED) && "Declined".equals(returnOutcome)) return "Return declined";
             if (status.equals(COMPLETED)) return "Completed";
-            if (method.equals("Cash on collection")) return "Pay at collection";
-            return "Awaiting collection";
+            if (hasCollectionProof() && sellerVerifiedTime <= 0) return "Collection review";
+            return deliveryOrder() ? "Out for delivery" : method.equals("Cash on collection") ? "Pay at collection" : "Awaiting collection";
         }
         String listingState() {
             if (status.equals(CANCELLED)) return "Available";
             if (status.equals(REQUESTED)) return "Reserved";
             return status.equals(COMPLETED) ? "Sold" : method.equals("Cash on collection") || method.equals("Free collection") ? "Reserved" : "Ordered";
+        }
+
+        boolean deliveryOrder() { return deliveryMethod != null && deliveryMethod.equals("Local delivery"); }
+        boolean hasCollectionProof() { return collectionPhotoUrl != null && !collectionPhotoUrl.trim().isEmpty(); }
+        boolean collectionProofPending() { return status.equals(HELD) && hasCollectionProof() && sellerVerifiedTime <= 0; }
+
+        /** Live maps and location sharing are only for an active delivery. */
+        boolean canShareLiveLocation() {
+            return deliveryOrder() && status.equals(HELD) && !cancellationPending();
+        }
+
+        /** Remove any shared positions once the handover is finished or closed. */
+        void clearSharedLocations() {
+            buyerLat = 0; buyerLng = 0; buyerLocationAt = 0;
+            sellerLat = 0; sellerLng = 0; sellerLocationAt = 0;
         }
 
         boolean approveBySeller(String email) {
@@ -1878,9 +1987,29 @@ public class MainActivity extends Activity {
             return true;
         }
 
-        boolean completeByBuyer(String email) {
-            if (!isBuyer(email) || !status.equals(HELD) || cancellationPending()) return false;
+        // The buyer photographs the handover. Only the seller can complete the
+        // order, after reviewing that photo.
+        boolean submitCollectionProof(String email, String photoUrl, long now) {
+            if (!isBuyer(email) || !status.equals(HELD) || cancellationPending()
+                    || photoUrl == null || photoUrl.trim().isEmpty()) return false;
+            collectionPhotoUrl = photoUrl.trim();
+            collectionPhotoBy = buyerEmail;
+            collectionPhotoTime = now;
+            sellerVerifiedBy = "";
+            sellerVerifiedTime = 0;
+            return true;
+        }
+        boolean verifyCollectionBySeller(String email, long now, String invoice) {
+            if (!isSeller(email) || !status.equals(HELD) || cancellationPending()
+                    || !hasCollectionProof() || !collectionPhotoBy.equalsIgnoreCase(buyerEmail)) return false;
             status = COMPLETED;
+            sellerVerifiedBy = sellerEmail;
+            sellerVerifiedTime = now;
+            clearSharedLocations();
+            if (invoiceNumber == null || invoiceNumber.trim().isEmpty()) {
+                invoiceNumber = invoice == null ? "" : invoice.trim();
+            }
+            if (invoiceFinalizedAt <= 0) invoiceFinalizedAt = now;
             return true;
         }
 
@@ -1894,7 +2023,7 @@ public class MainActivity extends Activity {
         boolean resolveCancellation(String email, boolean approve, long now) {
             if (!(isBuyer(email) || isSeller(email)) || !cancellationPending() || cancellationRequester.equalsIgnoreCase(email.trim())) return false;
             cancellationRequester = ""; cancellationOutcome = approve ? "Approved" : "Declined"; cancellationTime = now;
-            if (approve) status = CANCELLED;
+            if (approve) { status = CANCELLED; clearSharedLocations(); }
             return true;
         }
         boolean withdrawCancellation(String email, long now) {

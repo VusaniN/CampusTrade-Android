@@ -77,7 +77,7 @@ service cloud.firestore {
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(['isAdmin', 'rating', 'uid', 'createdAt', 'stuEmail', 'studentNumber'])
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['stuName', 'course', 'year', 'profileImage', 'lastActive', 'updatedAt']);
+             .hasOnly(['stuName', 'course', 'year', 'profileImage', 'lastActive', 'updatedAt', 'fcmToken']);
       // Owner can deactivate or soft-delete their own account.
       allow update: if isOwner(userId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountStatus', 'updatedAt'])
@@ -130,6 +130,7 @@ service cloud.firestore {
         && request.resource.data.listingN.size() > 0
         && isShortText(request.resource.data.listingN, 200)
         && isShortText(request.resource.data.description, 5000)
+        && isShortText(request.resource.data.get('specs', ''), 2000)
         && isShortText(request.resource.data.category, 80)
         && request.resource.data.createdAt is timestamp
         && request.resource.data.expiresAt is timestamp
@@ -140,7 +141,7 @@ service cloud.firestore {
         && request.resource.data.favouriteCount >= 0
         && request.resource.data.updatedAt is timestamp
         && request.resource.data.keys().hasOnly(
-             ['sellerID', 'sellerName', 'listingN', 'description', 'price', 'category',
+             ['sellerID', 'sellerName', 'listingN', 'description', 'specs', 'price', 'category',
               'condition', 'location', 'delivery', 'status', 'imageURL', 'photos',
               'documentURL', 'documentName', 'documentMime', 'documentSize', 'createdAt',
               'expiresAt', 'negotiable', 'viewCount', 'favouriteCount', 'updatedAt']);
@@ -152,7 +153,7 @@ service cloud.firestore {
         && request.resource.data.status in ['AVAILABLE', 'PAUSED', 'SOLD', 'RESERVED', 'ORDERED']
         && (!("expiresAt" in request.resource.data) || request.resource.data.expiresAt is timestamp)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
-             ['sellerName', 'listingN', 'description', 'price', 'category', 'condition', 'location',
+             ['sellerName', 'listingN', 'description', 'specs', 'price', 'category', 'condition', 'location',
               'delivery', 'status', 'imageURL', 'photos', 'documentURL', 'documentName',
               'documentMime', 'documentSize', 'negotiable', 'viewCount', 'favouriteCount',
               'expiresAt', 'updatedAt']);
@@ -253,11 +254,14 @@ service cloud.firestore {
         && request.resource.data.buyerPhone.size() <= 30
         && request.resource.data.reference is string
         && request.resource.data.reference.size() <= 300
+        && request.resource.data.deliveryMethod in ['Campus pickup', 'Local delivery']
+        && request.resource.data.deliveryAddress is string
+        && request.resource.data.deliveryAddress.size() <= 300
         && request.resource.data.createdAt is timestamp
         && request.resource.data.keys().hasOnly(
              ['listingId', 'buyerId', 'sellerId', 'title', 'price', 'listPrice', 'method',
               'buyerEmail', 'sellerEmail', 'buyerName', 'buyerPhone', 'reference',
-              'category', 'status', 'createdAt']);
+              'category', 'status', 'deliveryMethod', 'deliveryAddress', 'createdAt']);
 
       // Explicit transitions only. Cancellation metadata is not free-form:
       //  - REQUESTED -> HELD by seller
@@ -293,12 +297,76 @@ service cloud.firestore {
                    ['Declined by seller', 'Another request was accepted'])
             ))
           ||
-          // Buyer confirms collection. A pending cancellation blocks this.
+          // Buyer photographs the received item. This never completes the
+          // order; the seller must review and verify it first.
           (resource.data.status == 'HELD'
-            && request.resource.data.status == 'COMPLETED'
+            && request.resource.data.status == 'HELD'
             && request.auth.uid == resource.data.buyerId
             && resource.data.get('cancellationRequester', '') == ''
-            && changedOnly(['status', 'updatedAt']))
+            && request.resource.data.collectionPhotoUrl is string
+            && request.resource.data.collectionPhotoUrl.size() > 0
+            && request.resource.data.collectionPhotoUrl.size() <= 1000
+            && request.resource.data.collectionPhotoBy is string
+            && request.resource.data.collectionPhotoBy.lower() == request.auth.token.email.lower()
+            && request.resource.data.collectionPhotoTime is number
+            && request.resource.data.collectionPhotoTime > 0
+            && request.resource.data.get('sellerVerifiedTime', 0) == 0
+            && changedOnly(['status', 'collectionPhotoUrl', 'collectionPhotoBy',
+                            'collectionPhotoTime', 'buyerLat', 'buyerLng',
+                            'buyerLocationAt', 'updatedAt']))
+          ||
+          // Buyer live-location feed for a delivery order.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'HELD'
+            && request.auth.uid == resource.data.buyerId
+            && resource.data.get('cancellationRequester', '') == ''
+            && request.resource.data.buyerLat is number
+            && request.resource.data.buyerLat >= -90
+            && request.resource.data.buyerLat <= 90
+            && request.resource.data.buyerLng is number
+            && request.resource.data.buyerLng >= -180
+            && request.resource.data.buyerLng <= 180
+            && request.resource.data.buyerLocationAt is number
+            && request.resource.data.buyerLocationAt > 0
+            && changedOnly(['status', 'buyerLat', 'buyerLng', 'buyerLocationAt', 'updatedAt']))
+          ||
+          // Seller live-location feed for a delivery order.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'HELD'
+            && request.auth.uid == resource.data.sellerId
+            && resource.data.get('cancellationRequester', '') == ''
+            && request.resource.data.sellerLat is number
+            && request.resource.data.sellerLat >= -90
+            && request.resource.data.sellerLat <= 90
+            && request.resource.data.sellerLng is number
+            && request.resource.data.sellerLng >= -180
+            && request.resource.data.sellerLng <= 180
+            && request.resource.data.sellerLocationAt is number
+            && request.resource.data.sellerLocationAt > 0
+            && changedOnly(['status', 'sellerLat', 'sellerLng', 'sellerLocationAt', 'updatedAt']))
+          ||
+          // Seller verifies the buyer's collection photo and completes the
+          // sale. Buyers can never complete an order by tapping a button.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'COMPLETED'
+            && request.auth.uid == resource.data.sellerId
+            && resource.data.get('cancellationRequester', '') == ''
+            && resource.data.get('collectionPhotoUrl', '') != ''
+            && resource.data.get('collectionPhotoBy', '') == resource.data.buyerEmail
+            && request.resource.data.get('collectionPhotoUrl', '') == resource.data.get('collectionPhotoUrl', '')
+            && request.resource.data.get('collectionPhotoBy', '') == resource.data.get('collectionPhotoBy', '')
+            && request.resource.data.sellerVerifiedBy is string
+            && request.resource.data.sellerVerifiedBy.lower() == request.auth.token.email.lower()
+            && request.resource.data.sellerVerifiedTime is number
+            && request.resource.data.sellerVerifiedTime > 0
+            && request.resource.data.invoiceNumber is string
+            && request.resource.data.invoiceNumber.size() > 0
+            && request.resource.data.invoiceNumber.size() <= 80
+            && request.resource.data.invoiceFinalizedAt is number
+            && request.resource.data.invoiceFinalizedAt > 0
+            && changedOnly(['status', 'sellerVerifiedBy', 'sellerVerifiedTime',
+                            'invoiceNumber', 'invoiceFinalizedAt', 'sellerLat',
+                            'sellerLng', 'sellerLocationAt', 'updatedAt']))
           ||
           // Either participant asks the other to cancel a held order.
           (resource.data.status == 'HELD'
@@ -391,6 +459,19 @@ service cloud.firestore {
             && request.resource.data.payoutMethod in ['Bank transfer', 'Payment-provider balance']
             && request.resource.data.payoutSchedule in ['After collection', 'Weekly', 'On request']
             && changedOnly(['payoutRequestedAt', 'payoutMethod', 'payoutSchedule', 'updatedAt']))
+          ||
+          // Either participant clears stored live positions once the handover
+          // is finished or the order is cancelled. This only removes data.
+          ((resource.data.status == 'COMPLETED' || resource.data.status == 'CANCELLED')
+            && request.resource.data.status == resource.data.status
+            && request.resource.data.get('buyerLat', 0) == 0
+            && request.resource.data.get('buyerLng', 0) == 0
+            && request.resource.data.get('buyerLocationAt', 0) == 0
+            && request.resource.data.get('sellerLat', 0) == 0
+            && request.resource.data.get('sellerLng', 0) == 0
+            && request.resource.data.get('sellerLocationAt', 0) == 0
+            && changedOnly(['buyerLat', 'buyerLng', 'buyerLocationAt',
+                            'sellerLat', 'sellerLng', 'sellerLocationAt', 'updatedAt']))
         );
       allow delete: if false;
     }
@@ -587,7 +668,14 @@ service cloud.firestore {
         && request.resource.data.location is string
         && request.resource.data.time is number
         && request.resource.data.confirmed is list
-        && request.resource.data.confirmed.toSet().hasOnly([request.auth.token.email.lower()]);
+        && request.resource.data.confirmed.toSet().hasOnly([request.auth.token.email.lower()])
+        && request.resource.data.revision is number
+        && request.resource.data.revision >= 1
+        && request.resource.data.updatedBy is string
+        && request.resource.data.updatedBy.lower() == request.auth.token.email.lower()
+        && request.resource.data.arrangementUpdatedAt is number
+        && request.resource.data.arrangementUpdatedAt > 0
+        && request.resource.data.updatedAt is timestamp;
       allow update: if signedIn()
         && (resource.data.buyerId == request.auth.uid
           || resource.data.sellerId == request.auth.uid)
@@ -598,8 +686,21 @@ service cloud.firestore {
         && request.resource.data.confirmed.toSet()
              .difference(resource.data.confirmed.toSet())
              .hasOnly([request.auth.token.email.lower()])
+        && request.resource.data.revision is number
+        && request.resource.data.revision >= 1
+        && request.resource.data.updatedBy is string
+        && request.resource.data.updatedBy.lower() == request.auth.token.email.lower()
+        && request.resource.data.arrangementUpdatedAt is number
+        && request.resource.data.arrangementUpdatedAt > 0
+        && (
+          request.resource.data.revision == resource.data.get('revision', 1)
+          || (request.resource.data.revision == resource.data.get('revision', 1) + 1
+              && request.resource.data.confirmed.toSet()
+                   .hasOnly([request.auth.token.email.lower()]))
+        )
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['location', 'time', 'confirmed', 'updatedAt']);
+             .hasOnly(['location', 'time', 'confirmed', 'revision', 'updatedBy',
+                       'arrangementUpdatedAt', 'updatedAt']);
       allow delete: if false;
     }
 
@@ -623,6 +724,15 @@ service cloud.firestore {
         && request.resource.data.state == 'Open';
       allow read: if isAdmin();
       allow update, delete: if isAdmin();
+    }
+
+    // ---- moderator listing tombstones -------------------------------------
+    match /deletedListings/{listingId} {
+      allow read: if signedIn();
+      allow create: if isAdmin()
+        && request.resource.data.listingId == listingId
+        && request.resource.data.deletedAt is timestamp;
+      allow update, delete: if false;
     }
 
     // ---- favourites --------------------------------------------------------

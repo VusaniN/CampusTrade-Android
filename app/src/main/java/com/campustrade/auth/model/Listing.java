@@ -10,6 +10,7 @@ public class Listing {
     private String sellerName = "";
     private String listingN = "";
     private String description = "";
+    private String specs = "";
     private double price = 0.0;
     private String category = "";
     private String condition = "";
@@ -65,6 +66,14 @@ public class Listing {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getSpecs() {
+        return specs;
+    }
+
+    public void setSpecs(String specs) {
+        this.specs = specs;
     }
 
     public double getPrice() {

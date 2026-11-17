@@ -33,27 +33,37 @@ public class Notification {
     }
 
     void addNotification(String email, String title, String body) {
-        addNotification(email, title, body, "general", "");
+        addNotification(email, title, body, "general", "", "");
     }
 
-    // Each student has a list; keep the newest 100.
     void addNotification(String email, String title, String body, String category, String peer) {
+        addNotification(email, title, body, category, peer, "");
+    }
+
+    // Each student has a list; keep the newest 100. orderId lets an order alert
+    // open the exact order instead of merely the Payments tab.
+    void addNotification(String email, String title, String body, String category, String peer, String orderId) {
         SharedPreferences prefs = host.getSharedPreferences(host.PREFS + "_alerts", Context.MODE_PRIVATE);
         try {
             JSONArray data = new JSONArray(prefs.getString(email, "[]"));
             data.put(new JSONObject().put("title", title).put("body", body).put("time", System.currentTimeMillis())
-                    .put("category", category).put("read", false).put("peer", peer));
+                    .put("category", category).put("read", false).put("peer", peer == null ? "" : peer)
+                    .put("orderId", orderId == null ? "" : orderId));
             while (data.length() > 100) data.remove(0);
             prefs.edit().putString(email, data.toString()).apply();
         } catch (org.json.JSONException e) { }
     }
 
     void sendPush(String recipientEmail, String title, String body) {
-        sendPush(recipientEmail, title, body, "", "");
+        sendPush(recipientEmail, title, body, "", "", "");
+    }
+
+    void sendPush(String recipientEmail, String title, String body, String category, String peer) {
+        sendPush(recipientEmail, title, body, category, peer, "");
     }
 
     // Fetch a fresh Firebase token before sending a push.
-    void sendPush(String recipientEmail, String title, String body, String category, String peer) {
+    void sendPush(String recipientEmail, String title, String body, String category, String peer, String orderId) {
         if (recipientEmail == null || recipientEmail.trim().isEmpty() || title == null || body == null) return;
         if (!host.settingsPrefs().getBoolean("push", true)) return;
 
@@ -88,6 +98,7 @@ public class Notification {
                     payload.put("body", body);
                     payload.put("category", category == null || category.isEmpty() ? "general" : category);
                     payload.put("peer", peer == null ? "" : peer);
+                    payload.put("orderId", orderId == null ? "" : orderId);
 
                     byte[] bytes = payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
                     try (java.io.OutputStream output = connection.getOutputStream()) {
@@ -131,12 +142,27 @@ public class Notification {
         host.getSharedPreferences(host.PREFS + "_alerts", Context.MODE_PRIVATE).edit().putString(host.currentStudentEmail, items.toString()).apply();
     }
 
+    public boolean isOrderCategory(String category) {
+        return "payment".equals(category) || "order".equals(category) || "orders".equals(category);
+    }
+
+    public boolean isChatCategory(String category) {
+        return "messages".equals(category) || "chat".equals(category) || "chats".equals(category);
+    }
+
+    public String notificationGroupFor(String category) {
+        if (isOrderCategory(category)) return "Orders";
+        if (isChatCategory(category)) return "Chats";
+        return "Updates";
+    }
+
     // Old alerts have no category, so guess one from the title.
     public String alertCategory(JSONObject alert) {
         String category = alert.optString("category");
         if (!category.isEmpty() && !category.equals("general")) return category;
         String title = alert.optString("title").toLowerCase(Locale.ROOT);
-        if (title.contains("payment") || title.contains("receipt") || title.contains("payout")) return "payment";
+        if (title.contains("order") || title.contains("payment") || title.contains("receipt")
+                || title.contains("collection") || title.contains("payout") || title.contains("return")) return "payment";
         if (title.contains("message") || title.contains("replied")) return "messages";
         if (title.contains("deadline") || title.contains("assignment")) return "deadline";
         if (title.contains("group")) return "groups";
@@ -167,6 +193,22 @@ public class Notification {
         return wasYesterday ? "Yesterday" : "Earlier";
     }
 
+    private int unreadIn(JSONArray data, String filter) {
+        int count = 0;
+        for (int i = 0; i < data.length(); i++) {
+            JSONObject alert = data.optJSONObject(i);
+            if (alert == null || alert.optBoolean("read", false)) continue;
+            String group = notificationGroupFor(alertCategory(alert));
+            if (filter.equals("All") || filter.equals(group)) count++;
+        }
+        return count;
+    }
+
+    private boolean matchesFilter(JSONObject alert, String filter) {
+        if (filter.equals("All")) return true;
+        return notificationGroupFor(alertCategory(alert)).equals(filter);
+    }
+
     public void buildNotifications(LinearLayout content) {
         JSONArray data = notificationItems();
         LinearLayout toolbar = host.ui.horizontal();
@@ -184,12 +226,41 @@ public class Notification {
         toolbar.addView(allRead);
         content.addView(toolbar);
 
+        // Orders and chats are separated so an order decision never gets lost
+        // inside the chat stream.
+        LinearLayout tabs = host.ui.horizontal();
+        tabs.setPadding(host.ui.dp(3), host.ui.dp(3), host.ui.dp(3), host.ui.dp(3));
+        tabs.setBackground(host.ui.round(host.nightActive ? host.surface() : Color.rgb(242, 240, 235), 12));
+        String selected = host.notificationFilter == null ? "All" : host.notificationFilter;
+        int index = 0;
+        for (String mode : new String[] {"All", "Orders", "Chats", "Updates"}) {
+            int unread = unreadIn(data, mode);
+            String label = unread > 0 ? mode + " (" + unread + ")" : mode;
+            TextView tab = host.ui.filterPill(label, mode.equals(selected));
+            tab.setOnClickListener(v -> {
+                host.notificationFilter = mode;
+                host.showAppScreen("Notifications");
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, host.ui.dp(46), 1);
+            if (index++ > 0) params.leftMargin = host.ui.dp(4);
+            tabs.addView(tab, params);
+        }
+        content.addView(tabs);
+        TextView scope = host.ui.bodyText(
+                selected.equals("Orders") ? "Purchase requests, collection checks and returns."
+                        : selected.equals("Chats") ? "Messages from your classmates."
+                        : selected.equals("Updates") ? "Campus, listings, deadlines and groups."
+                        : "Orders, chats and campus updates in one place.",
+                host.muted, 11);
+        scope.setPadding(host.ui.dp(4), host.ui.dp(10), host.ui.dp(4), host.ui.dp(4));
+        content.addView(scope);
+
         LinearLayout history = new LinearLayout(host);
         history.setOrientation(LinearLayout.VERTICAL);
         String lastGroup = "";
         for (int i = data.length() - 1; i >= 0; i--) {
             JSONObject alert = data.optJSONObject(i);
-            if (alert == null) continue;
+            if (alert == null || !matchesFilter(alert, selected)) continue;
             String category = alertCategory(alert);
             boolean unread = !alert.optBoolean("read", false);
             String group = notificationGroup(alert.optLong("time"));
@@ -199,11 +270,11 @@ public class Notification {
                 history.addView(heading);
                 lastGroup = group;
             }
-            String icon = category.equals("payment") ? "payment" : category.equals("deadline") ? "calendar"
-                    : category.equals("messages") ? "chat" : category.equals("groups") ? "team" : "bag";
+            String icon = isOrderCategory(category) ? "payment" : category.equals("deadline") ? "calendar"
+                    : isChatCategory(category) ? "chat" : category.equals("groups") ? "team" : "bag";
             int accent = category.equals("deadline") ? Color.rgb(217, 139, 0)
                     : category.equals("groups") ? host.blue
-                    : category.equals("payment") || category.equals("marketplace") ? host.green : host.blue;
+                    : isOrderCategory(category) || category.equals("marketplace") ? host.green : host.blue;
             int iconBackground = category.equals("deadline") ? Color.rgb(255, 244, 218)
                     : category.equals("groups") ? Color.rgb(240, 236, 255)
                     : accent == host.green ? Color.rgb(229, 247, 239) : Color.rgb(234, 242, 255);
@@ -235,35 +306,22 @@ public class Notification {
             }
             row.addView(host.new CampusAssetView(host, "chevron", host.muted),
                     new LinearLayout.LayoutParams(host.ui.dp(14), host.ui.dp(14)));
-            // Every alert opens the most useful screen.
-            row.setOnClickListener(v -> {
-                try { alert.put("read", true); } catch (org.json.JSONException ignored) { }
-                saveNotificationItems(data);
-                String peer = alert.optString("peer");
-                if (category.equals("messages") && !peer.isEmpty() && !peer.equals(host.currentStudentEmail)) {
-                    host.showAppScreen("Notifications");
-                    host.inbox.showConversation(peer);
-                } else if (category.equals("payment")) {
-                    host.order.showTransactionHistory();
-                } else if (category.equals("marketplace")) {
-                    host.showAppScreen("Market");
-                } else if (category.equals("deadline")) {
-                    host.showAppScreen("Academics");
-                } else if (category.equals("groups")) {
-                    host.showAppScreen("Groups");
-                } else {
-                    host.showAppScreen("Notifications");
-                    host.ui.showSimpleMessage(alert.optString("title"), alert.optString("body"));
-                }
-            });
+            // Every alert opens the most useful screen. Order alerts carry an
+            // order id so they open that order, not just the Payments list.
+            row.setOnClickListener(v -> openAlert(data, alert, category));
             host.ui.attachPressAnimation(row);
             LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             rowParams.bottomMargin = host.ui.dp(6);
             history.addView(row, rowParams);
         }
         if (history.getChildCount() == 0) {
-            history.addView(host.ui.emptyState("bell", "No notifications yet",
-                    "Order updates, messages and campus alerts will appear here."));
+            history.addView(host.ui.emptyState("bell",
+                    selected.equals("Orders") ? "No order notifications"
+                            : selected.equals("Chats") ? "No chat notifications"
+                            : selected.equals("Updates") ? "No campus updates" : "No notifications yet",
+                    selected.equals("Orders") ? "Purchase requests, collection checks and returns will appear here."
+                            : selected.equals("Chats") ? "Messages from classmates will appear here."
+                            : "Order updates, messages and campus alerts will appear here."));
         }
         content.addView(history);
 
@@ -275,20 +333,75 @@ public class Notification {
         content.addView(openSettings, settingsParams);
     }
 
+    private void openAlert(JSONArray data, JSONObject alert, String category) {
+        try { alert.put("read", true); } catch (org.json.JSONException ignored) { }
+        saveNotificationItems(data);
+        String peer = alert.optString("peer");
+        String orderId = alert.optString("orderId");
+        if (isChatCategory(category) && !peer.isEmpty() && !peer.equals(host.currentStudentEmail)) {
+            host.notificationFilter = "Chats";
+            host.showAppScreen("Notifications");
+            host.inbox.reloadMessages();
+            host.inbox.showConversation(peer);
+        } else if (isOrderCategory(category)) {
+            host.notificationFilter = "Orders";
+            MainActivity.TransactionRecord target = host.order.orderById(orderId);
+            if (target != null) {
+                host.buyingOrders = target.isBuyer(host.currentStudentEmail);
+            }
+            host.order.showTransactionHistory();
+            if (target != null) host.order.showOrderDetails(target);
+        } else if (category.equals("marketplace")) {
+            host.notificationFilter = "Updates";
+            host.showAppScreen("Market");
+        } else if (category.equals("deadline")) {
+            host.notificationFilter = "Updates";
+            host.showAppScreen("Academics");
+        } else if (category.equals("groups")) {
+            host.notificationFilter = "Updates";
+            host.showAppScreen("Groups");
+        } else {
+            // Standalone campus alerts have no order or chat destination, so
+            // show their own detail instead of dropping the student on a list.
+            host.showAppScreen("Notifications");
+            host.ui.showSimpleMessage(alert.optString("title"), alert.optString("body"));
+        }
+    }
+
     // Android 8+ needs a channel; making it again is safe.
     public void createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager manager = (NotificationManager) host.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) return;
-        NotificationChannel channel = new NotificationChannel(
+        NotificationChannel updates = new NotificationChannel(
                 Constants.NOTIFICATION_CHANNEL_ID,
-                "CampusTrade alerts",
+                "CampusTrade updates",
+                NotificationManager.IMPORTANCE_DEFAULT
+        );
+        updates.setDescription("Campus announcements, listings, deadlines and groups.");
+        updates.enableVibration(true);
+        updates.setShowBadge(true);
+        manager.createNotificationChannel(updates);
+
+        NotificationChannel orders = new NotificationChannel(
+                Constants.ORDER_CHANNEL_ID,
+                "CampusTrade orders",
                 NotificationManager.IMPORTANCE_HIGH
         );
-        channel.setDescription("Messages, orders and campus activity that pop up on screen.");
-        channel.enableVibration(true);
-        channel.setShowBadge(true);
-        manager.createNotificationChannel(channel);
+        orders.setDescription("Purchase requests, collection checks, returns and invoices.");
+        orders.enableVibration(true);
+        orders.setShowBadge(true);
+        manager.createNotificationChannel(orders);
+
+        NotificationChannel chats = new NotificationChannel(
+                Constants.CHAT_CHANNEL_ID,
+                "CampusTrade chats",
+                NotificationManager.IMPORTANCE_HIGH
+        );
+        chats.setDescription("Messages from buyers, sellers and classmates.");
+        chats.enableVibration(true);
+        chats.setShowBadge(true);
+        manager.createNotificationChannel(chats);
     }
 
     // Android 13+ asks for notification permission.
@@ -306,21 +419,26 @@ public class Notification {
     }
 
     void showCampusNotification(String title, String message) {
-        showCampusNotification(title, message, "general");
+        showCampusNotification(title, message, "general", "", "");
     }
 
     void showCampusNotification(String title, String message, String category) {
-        showCampusNotification(title, message, category, "");
+        showCampusNotification(title, message, category, "", "");
+    }
+
+    void showCampusNotification(String title, String message, String category, String peer) {
+        showCampusNotification(title, message, category, peer, "");
     }
 
     // Save the alert first, then show the phone notification.
-    void showCampusNotification(String title, String message, String category, String peer) {
-        addNotification(host.currentStudentEmail, title, message, category, peer);
+    void showCampusNotification(String title, String message, String category, String peer, String orderId) {
+        addNotification(host.currentStudentEmail, title, message, category, peer, orderId);
         String preference = category.equals("deadline") ? "deadlines" : category;
-        // Payment alerts ignore quiet hours and category switches.
+        // Order alerts ignore quiet hours and category switches.
+        boolean order = isOrderCategory(category);
         boolean allowed = canShowNotifications() && host.settingsPrefs().getBoolean("push", true)
-                && (category.equals("payment") || !host.profile.inQuietHours())
-                && (category.equals("payment") || host.settingsPrefs().getBoolean(preference, true));
+                && (order || !host.profile.inQuietHours())
+                && (order || host.settingsPrefs().getBoolean(preference, true));
         if (!allowed) {
             android.util.Log.d("CampusTrade", "system notification suppressed: category=" + category
                     + " enabled=" + canShowNotifications()
@@ -334,19 +452,29 @@ public class Notification {
                 ? "Open CampusTrade to view this notification." : message;
         Intent intent = new Intent(host, MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        // Chat alerts open that chat; other alerts open the notification list.
-        if (category.equals("messages")) {
+        // Chats open that chat, orders open that order, everything else opens
+        // the matching notification stream.
+        if (isChatCategory(category)) {
             intent.putExtra("open_inbox", true);
             if (peer != null && !peer.isEmpty()) intent.putExtra("open_peer", peer);
-        } else intent.putExtra("open_notifications", true);
+        } else if (order) {
+            intent.putExtra("open_orders", true);
+            if (orderId != null && !orderId.isEmpty()) intent.putExtra("open_order", orderId);
+        } else {
+            intent.putExtra("open_notifications", true);
+            intent.putExtra("open_notification_filter", notificationGroupFor(category));
+        }
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
-        PendingIntent pendingIntent = PendingIntent.getActivity(host, 0, intent, flags);
+        int requestCode = (title + "|" + category + "|" + peer + "|" + orderId).hashCode() & 0x7fffffff;
+        PendingIntent pendingIntent = PendingIntent.getActivity(host, requestCode, intent, flags);
 
+        String channelId = isOrderCategory(category) ? Constants.ORDER_CHANNEL_ID
+                : isChatCategory(category) ? Constants.CHAT_CHANNEL_ID : Constants.NOTIFICATION_CHANNEL_ID;
         android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new android.app.Notification.Builder(host, Constants.NOTIFICATION_CHANNEL_ID)
+                ? new android.app.Notification.Builder(host, channelId)
                 : new android.app.Notification.Builder(host);
         builder.setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle(title)
@@ -355,14 +483,14 @@ public class Notification {
                 .setContentIntent(pendingIntent)
                 .setPriority(android.app.Notification.PRIORITY_HIGH)
                 .setDefaults(android.app.Notification.DEFAULT_ALL)
-                .setCategory(category.equals("messages") ? android.app.Notification.CATEGORY_MESSAGE : android.app.Notification.CATEGORY_STATUS)
+                .setCategory(isChatCategory(category) ? android.app.Notification.CATEGORY_MESSAGE : android.app.Notification.CATEGORY_STATUS)
                 .setAutoCancel(true);
 
         NotificationManager manager = (NotificationManager) host.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
             try {
-                // One slot per chat, so messages replace instead of stacking.
-                int id = ("campustrade:" + title).hashCode() & 0x7fffffff;
+                // One slot per chat, order or alert title.
+                int id = ("campustrade:" + title + ":" + peer + ":" + orderId).hashCode() & 0x7fffffff;
                 manager.notify(id, builder.build());
             } catch (SecurityException e) {
                 android.util.Log.w("CampusTrade", "notification blocked: " + e.getMessage());

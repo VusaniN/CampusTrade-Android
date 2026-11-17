@@ -62,9 +62,11 @@ public class RatingRepository {
     }
 
     /** Send an issue report or suggestion. */
-    public void report(String userID, String type, String description, DoneCallback cb) {
+    public void report(String userID, String userEmail, String userName, String type, String description, DoneCallback cb) {
         Map<String, Object> doc = new HashMap<>();
         doc.put("userID", userID);
+        doc.put("userEmail", userEmail != null ? userEmail : "");
+        doc.put("userName", userName != null ? userName : "");
         doc.put("type", type);
         doc.put("description", description);
         doc.put("statusF", "OPEN");

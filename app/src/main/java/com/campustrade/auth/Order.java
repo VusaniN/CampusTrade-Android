@@ -8,6 +8,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -22,12 +23,15 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.RadioButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.core.content.FileProvider;
+import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -47,9 +51,52 @@ public class Order {
     private final java.util.Set<String> pushRetried = new java.util.HashSet<>();
     private boolean pickupsPulling = false;
     private long lastPickupsPullAt = 0;
+    private Dialog currentOrderPage;
+    private String currentOrderId = "";
+    private Dialog currentReceiptPage;
+    private String currentReceiptId = "";
+    private com.google.firebase.firestore.ListenerRegistration pickupBuyerListener;
+    private com.google.firebase.firestore.ListenerRegistration pickupSellerListener;
+    public Uri pendingCollectionPhoto;
 
     public Order(MainActivity host) {
         this.host = host;
+    }
+
+    public MainActivity.TransactionRecord orderById(String id) {
+        if (id == null || id.isEmpty()) return null;
+        for (MainActivity.TransactionRecord order : host.transactions) {
+            if (order.id.equals(id)) return order;
+        }
+        return null;
+    }
+
+    /** Redraw any open order page after a live cloud update. */
+    public void refreshOpenOrder() {
+        if (currentOrderPage != null && currentOrderPage.isShowing() && !currentOrderId.isEmpty()) {
+            MainActivity.TransactionRecord order = orderById(currentOrderId);
+            if (order != null) {
+                boolean mapShowing = DeliveryMap.isShowingOrder(order.id);
+                DeliveryMap.onOrderUpdated(host, order);
+                // Location updates should redraw the open map, not push the
+                // underlying order page back over it. Status changes still
+                // refresh the detail page once the map has closed.
+                if (!mapShowing || !order.canShareLiveLocation()) showOrderDetails(order);
+            }
+        }
+        if (currentReceiptPage != null && currentReceiptPage.isShowing() && !currentReceiptId.isEmpty()) {
+            MainActivity.TransactionRecord record = orderById(currentReceiptId);
+            if (record != null) showReceipt(record);
+        }
+    }
+
+    /** Rebuild order-driven tabs after a local status change. */
+    public void refreshOrderTab() {
+        String tab = host.currentTab;
+        if (tab.equals("Payments") || tab.equals("Offers") || tab.equals("Home")
+                || tab.equals("SellerDashboard") || tab.equals("AdminAnalytics")) {
+            host.showAppScreen(tab);
+        }
     }
 
     interface OrderChange { boolean apply(); }
@@ -75,10 +122,14 @@ public class Order {
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         form.addView(host.ui.bodyText(order.itemTitle, host.text, 15));
-        form.addView(host.ui.bodyText("Rate each category from 1 (poor) to 5 (excellent). Buyer ratings are required after collection; written feedback is optional.", host.muted, 12));
-        Spinner communication = host.ui.listingSelector(form, "Communication", new String[] {"Choose", "1", "2", "3", "4", "5"});
-        Spinner accuracy = host.ui.listingSelector(form, "Item accuracy", new String[] {"Choose", "1", "2", "3", "4", "5"});
-        Spinner punctuality = host.ui.listingSelector(form, "Punctuality", new String[] {"Choose", "1", "2", "3", "4", "5"});
+        form.addView(host.ui.bodyText("Tap the stars to rate each category. Buyer ratings are required after collection; written feedback is optional.",
+                host.muted, 12));
+        final int[] communicationRating = {0};
+        final int[] accuracyRating = {0};
+        final int[] punctualityRating = {0};
+        starRating(form, "Communication", communicationRating);
+        starRating(form, "Item accuracy", accuracyRating);
+        starRating(form, "Punctuality", punctualityRating);
         EditText comment = host.ui.listingField(form, "Review (optional)", "Your experience", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         comment.setSingleLine(false); comment.setGravity(Gravity.TOP | Gravity.START);
         comment.setPadding(host.ui.dp(14), host.ui.dp(12), host.ui.dp(14), host.ui.dp(12));
@@ -96,11 +147,11 @@ public class Order {
         root.addView(footer);
 
         submit.setOnClickListener(v -> {
-            int comm = communication.getSelectedItemPosition();
-            int acc = accuracy.getSelectedItemPosition();
-            int punct = punctuality.getSelectedItemPosition();
+            int comm = communicationRating[0];
+            int acc = accuracyRating[0];
+            int punct = punctualityRating[0];
             if (comm == 0 || acc == 0 || punct == 0) {
-                Toast.makeText(host, "Choose a rating for each category.", Toast.LENGTH_LONG).show();
+                Toast.makeText(host, "Tap a star rating for each category.", Toast.LENGTH_LONG).show();
                 return;
             }
             host.featureStore.update(f -> f.review(order.id, order.buyerEmail, order.sellerEmail, order.status.equals(MainActivity.TransactionRecord.COMPLETED), host.currentStudentEmail,
@@ -127,7 +178,7 @@ public class Order {
                 }
             });
             host.notification.addNotification(order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail,
-                    "New purchase review", order.itemTitle, "payment", "");
+                    "New purchase review", order.itemTitle, "payment", "", order.id);
             host.notification.showCampusNotification("Review submitted", "Your ratings have been saved.", "payment");
             page.dismiss();
             host.showAppScreen("Payments");
@@ -141,6 +192,35 @@ public class Order {
             window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
             window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         }
+    }
+
+    private void starRating(LinearLayout form, String label, int[] selected) {
+        TextView title = host.ui.titleText(label, host.text, 14);
+        title.setPadding(0, host.ui.dp(14), 0, host.ui.dp(2));
+        form.addView(title);
+        LinearLayout row = host.ui.horizontal();
+        TextView[] stars = new TextView[5];
+        for (int i = 0; i < 5; i++) {
+            final int value = i + 1;
+            TextView star = new TextView(host);
+            star.setText("☆");
+            star.setTextSize(30);
+            star.setGravity(Gravity.CENTER);
+            star.setPadding(host.ui.dp(4), host.ui.dp(2), host.ui.dp(4), host.ui.dp(2));
+            star.setTextColor(host.muted);
+            star.setContentDescription(value + (value == 1 ? " star" : " stars"));
+            star.setOnClickListener(v -> {
+                selected[0] = value;
+                for (int s = 0; s < stars.length; s++) {
+                    boolean filled = s < value;
+                    stars[s].setText(filled ? "★" : "☆");
+                    stars[s].setTextColor(filled ? Color.rgb(230, 160, 0) : host.muted);
+                }
+            });
+            stars[i] = star;
+            row.addView(star, new LinearLayout.LayoutParams(host.ui.dp(48), host.ui.dp(46)));
+        }
+        form.addView(row);
     }
 
     public boolean hasOrderReview(MainActivity.TransactionRecord order) {
@@ -200,11 +280,53 @@ public class Order {
                     data.put("location", pickup.location);
                     data.put("time", pickup.time);
                     data.put("confirmed", new java.util.ArrayList<>(pickup.confirmed));
+                    data.put("revision", Math.max(1, pickup.revision));
+                    data.put("updatedBy", pickup.updatedBy == null ? "" : pickup.updatedBy);
+                    Long updatedAt = pickup.updatedAt > 0 ? pickup.updatedAt : System.currentTimeMillis();
+                    data.put("arrangementUpdatedAt", updatedAt);
                     data.put("updatedAt", com.google.firebase.Timestamp.now());
                     db.collection("pickups").document(pickup.order).set(data)
                             .addOnFailureListener(e -> android.util.Log.w("CampusTrade", "pickup save failed: " + e.getMessage()));
                 })
                 .addOnFailureListener(e -> android.util.Log.w("CampusTrade", "pickup order lookup failed: " + e.getMessage()));
+    }
+
+    /** Live pickup plans so a confirmed arrangement appears without reopening. */
+    public void startLivePickups() {
+        String uid = CloudSync.uid(host);
+        if (uid.isEmpty() || pickupBuyerListener != null) return;
+        com.google.firebase.firestore.FirebaseFirestore db =
+                com.google.firebase.firestore.FirebaseFirestore.getInstance();
+        pickupBuyerListener = db.collection("pickups").whereEqualTo("buyerId", uid)
+                .addSnapshotListener((snap, error) -> {
+                    if (error != null) {
+                        android.util.Log.w("CampusTrade", "pickup listener (buyer): " + error.getMessage());
+                        return;
+                    }
+                    if (snap == null || host.isDestroyed() || host.isFinishing()) return;
+                    mergePickupDocs(snap.getDocuments());
+                    refreshLivePickups();
+                });
+        pickupSellerListener = db.collection("pickups").whereEqualTo("sellerId", uid)
+                .addSnapshotListener((snap, error) -> {
+                    if (error != null) {
+                        android.util.Log.w("CampusTrade", "pickup listener (seller): " + error.getMessage());
+                        return;
+                    }
+                    if (snap == null || host.isDestroyed() || host.isFinishing()) return;
+                    mergePickupDocs(snap.getDocuments());
+                    refreshLivePickups();
+                });
+    }
+
+    public void stopLivePickups() {
+        if (pickupBuyerListener != null) { pickupBuyerListener.remove(); pickupBuyerListener = null; }
+        if (pickupSellerListener != null) { pickupSellerListener.remove(); pickupSellerListener = null; }
+    }
+
+    private void refreshLivePickups() {
+        if ("Payments".equals(host.currentTab)) host.showAppScreen("Payments");
+        refreshOpenOrder();
     }
 
     /** Load pickup plans at most every few seconds. */
@@ -222,32 +344,7 @@ public class Order {
                                     new java.util.LinkedHashMap<>();
                             for (com.google.firebase.firestore.DocumentSnapshot d : buySnap.getDocuments()) docs.put(d.getId(), d);
                             for (com.google.firebase.firestore.DocumentSnapshot d : sellSnap.getDocuments()) docs.put(d.getId(), d);
-                            try {
-                                host.featureStore.update(f -> {
-                                    for (com.google.firebase.firestore.DocumentSnapshot doc : docs.values()) {
-                                        CampusFeatures.Pickup target = f.pickup(doc.getId());
-                                        if (target == null) {
-                                            target = new CampusFeatures.Pickup();
-                                            target.order = doc.getId();
-                                            f.pickups.add(target);
-                                        }
-                                        String buyer = doc.getString("buyerEmail");
-                                        if (buyer == null || buyer.isEmpty()) buyer = CloudSync.emailForUid(host, doc.getString("buyerId"));
-                                        String seller = doc.getString("sellerEmail");
-                                        if (seller == null || seller.isEmpty()) seller = CloudSync.emailForUid(host, doc.getString("sellerId"));
-                                        target.buyer = buyer == null ? "" : buyer;
-                                        target.seller = seller == null ? "" : seller;
-                                        target.location = doc.getString("location") == null ? "" : doc.getString("location");
-                                        Long time = doc.getLong("time");
-                                        target.time = time == null ? 0 : time;
-                                        target.confirmed.clear();
-                                        java.util.List<String> confirmed = (java.util.List<String>) doc.get("confirmed");
-                                        if (confirmed != null) target.confirmed.addAll(confirmed);
-                                    }
-                                });
-                            } catch (RuntimeException e) {
-                                android.util.Log.w("CampusTrade", "pickup merge failed: " + e.getMessage());
-                            }
+                            mergePickupDocs(docs.values());
                             pickupsPulling = false;
                             if (!host.isDestroyed() && !host.isFinishing() && host.currentTab.equals("Payments")) {
                                 host.showAppScreen("Payments");
@@ -261,6 +358,45 @@ public class Order {
                     android.util.Log.w("CampusTrade", "pickup buyer pull failed: " + e.getMessage());
                     pickupsPulling = false;
                 });
+    }
+
+    /** Merge pickup snapshots from either side of the order. */
+    private void mergePickupDocs(java.util.Collection<com.google.firebase.firestore.DocumentSnapshot> docs) {
+        try {
+            host.featureStore.update(f -> {
+                for (com.google.firebase.firestore.DocumentSnapshot doc : docs) {
+                    CampusFeatures.Pickup target = f.pickup(doc.getId());
+                    if (target == null) {
+                        target = new CampusFeatures.Pickup();
+                        target.order = doc.getId();
+                        f.pickups.add(target);
+                    }
+                    String buyer = doc.getString("buyerEmail");
+                    if (buyer == null || buyer.isEmpty()) buyer = CloudSync.emailForUid(host, doc.getString("buyerId"));
+                    String seller = doc.getString("sellerEmail");
+                    if (seller == null || seller.isEmpty()) seller = CloudSync.emailForUid(host, doc.getString("sellerId"));
+                    target.buyer = buyer == null ? "" : buyer;
+                    target.seller = seller == null ? "" : seller;
+                    target.location = doc.getString("location") == null ? "" : doc.getString("location");
+                    Long time = doc.getLong("time");
+                    target.time = time == null ? 0 : time;
+                    Long revision = doc.getLong("revision");
+                    Long arrangementAt = doc.getLong("arrangementUpdatedAt");
+                    int cloudRevision = revision == null ? 1 : revision.intValue();
+                    long cloudUpdatedAt = arrangementAt == null ? 0 : arrangementAt;
+                    if (cloudUpdatedAt >= target.updatedAt) {
+                        target.revision = Math.max(1, cloudRevision);
+                        target.updatedBy = doc.getString("updatedBy") == null ? "" : doc.getString("updatedBy");
+                        target.updatedAt = cloudUpdatedAt;
+                        target.confirmed.clear();
+                        java.util.List<String> confirmed = (java.util.List<String>) doc.get("confirmed");
+                        if (confirmed != null) target.confirmed.addAll(confirmed);
+                    }
+                }
+            });
+        } catch (RuntimeException e) {
+            android.util.Log.w("CampusTrade", "pickup merge failed: " + e.getMessage());
+        }
     }
 
     /** Load one side of the order list and merge each order. */
@@ -298,6 +434,26 @@ public class Order {
             long cloudPayout = payoutTime == null ? 0 : payoutTime;
             String cloudPayoutMethod = doc.getString("payoutMethod");
             String cloudPayoutSchedule = doc.getString("payoutSchedule");
+            String cloudDeliveryMethod = doc.getString("deliveryMethod");
+            String cloudDeliveryAddress = doc.getString("deliveryAddress");
+            double cloudBuyerLat = doc.getDouble("buyerLat") == null ? 0 : doc.getDouble("buyerLat");
+            double cloudBuyerLng = doc.getDouble("buyerLng") == null ? 0 : doc.getDouble("buyerLng");
+            double cloudSellerLat = doc.getDouble("sellerLat") == null ? 0 : doc.getDouble("sellerLat");
+            double cloudSellerLng = doc.getDouble("sellerLng") == null ? 0 : doc.getDouble("sellerLng");
+            Long buyerLocationAt = doc.getLong("buyerLocationAt");
+            Long sellerLocationAt = doc.getLong("sellerLocationAt");
+            long cloudBuyerLocationAt = buyerLocationAt == null ? 0 : buyerLocationAt;
+            long cloudSellerLocationAt = sellerLocationAt == null ? 0 : sellerLocationAt;
+            String cloudProofUrl = doc.getString("collectionPhotoUrl") == null ? "" : doc.getString("collectionPhotoUrl");
+            String cloudProofBy = doc.getString("collectionPhotoBy") == null ? "" : doc.getString("collectionPhotoBy");
+            Long proofTime = doc.getLong("collectionPhotoTime");
+            long cloudProofTime = proofTime == null ? 0 : proofTime;
+            String cloudVerifiedBy = doc.getString("sellerVerifiedBy") == null ? "" : doc.getString("sellerVerifiedBy");
+            Long verifiedTime = doc.getLong("sellerVerifiedTime");
+            long cloudVerifiedTime = verifiedTime == null ? 0 : verifiedTime;
+            String cloudInvoice = doc.getString("invoiceNumber") == null ? "" : doc.getString("invoiceNumber");
+            Long invoiceTime = doc.getLong("invoiceFinalizedAt");
+            long cloudInvoiceTime = invoiceTime == null ? 0 : invoiceTime;
             boolean payoutChanged = cloudPayout > 0 && (
                     order.payoutRequestedAt != cloudPayout
                     || (cloudPayoutMethod != null && !cloudPayoutMethod.equals(order.payoutMethod))
@@ -311,13 +467,27 @@ public class Order {
                     || !order.returnReason.equals(cloudReturnReason)
                     || !order.returnOutcome.equals(cloudReturnOutcome)
                     || order.returnTime != cloudReturnTime;
+            boolean deliveryChanged = cloudDeliveryMethod != null && !cloudDeliveryMethod.isEmpty()
+                    && !cloudDeliveryMethod.equals(order.deliveryMethod)
+                    || cloudDeliveryAddress != null && !cloudDeliveryAddress.equals(order.deliveryAddress);
+            boolean locationChanged = cloudBuyerLocationAt > order.buyerLocationAt && cloudBuyerLat != 0
+                    || cloudSellerLocationAt > order.sellerLocationAt && cloudSellerLat != 0;
+            boolean proofChanged = !cloudProofUrl.isEmpty() && (!cloudProofUrl.equals(order.collectionPhotoUrl)
+                    || cloudProofTime > order.collectionPhotoTime);
+            boolean verifiedChanged = cloudVerifiedTime > order.sellerVerifiedTime;
+            boolean invoiceChanged = cloudInvoiceTime > order.invoiceFinalizedAt
+                    || (!cloudInvoice.isEmpty() && !cloudInvoice.equals(order.invoiceNumber));
             // Only update local orders that actually changed.
-            if (!statusChanged && !requestChanged && !returnChanged && !payoutChanged) return;
+            if (!statusChanged && !requestChanged && !returnChanged && !payoutChanged
+                    && !deliveryChanged && !locationChanged && !proofChanged
+                    && !verifiedChanged && !invoiceChanged) return;
             // Requests only move forward; an old read must not undo a local decision.
             if (order.status.equals(MainActivity.TransactionRecord.HELD) && cloudStatus.equals(MainActivity.TransactionRecord.REQUESTED)) return;
             if (order.status.equals(MainActivity.TransactionRecord.COMPLETED) && !cloudStatus.equals(MainActivity.TransactionRecord.COMPLETED)) return;
             if (order.status.equals(MainActivity.TransactionRecord.CANCELLED) && !cloudStatus.equals(MainActivity.TransactionRecord.CANCELLED)) return;
             String oldStatus = order.status;
+            String oldProof = order.collectionPhotoUrl;
+            long oldVerified = order.sellerVerifiedTime;
             order.status = cloudStatus;
             order.cancellationRequester = cloudRequester;
             order.cancellationReason = cloudReason;
@@ -332,6 +502,31 @@ public class Order {
                 if (cloudPayoutMethod != null && !cloudPayoutMethod.isEmpty()) order.payoutMethod = cloudPayoutMethod;
                 if (cloudPayoutSchedule != null && !cloudPayoutSchedule.isEmpty()) order.payoutSchedule = cloudPayoutSchedule;
             }
+            if (cloudDeliveryMethod != null && !cloudDeliveryMethod.isEmpty()) order.deliveryMethod = cloudDeliveryMethod;
+            if (cloudDeliveryAddress != null) order.deliveryAddress = cloudDeliveryAddress;
+            // Positions are only usable while the delivery is active. Ignore
+            // stale coordinates from a completed or cancelled order.
+            if (order.canShareLiveLocation()) {
+                if (cloudBuyerLat != 0 && cloudBuyerLocationAt >= order.buyerLocationAt) {
+                    order.buyerLat = cloudBuyerLat; order.buyerLng = cloudBuyerLng; order.buyerLocationAt = cloudBuyerLocationAt;
+                }
+                if (cloudSellerLat != 0 && cloudSellerLocationAt >= order.sellerLocationAt) {
+                    order.sellerLat = cloudSellerLat; order.sellerLng = cloudSellerLng; order.sellerLocationAt = cloudSellerLocationAt;
+                }
+            } else {
+                order.clearSharedLocations();
+            }
+            if (!cloudProofUrl.isEmpty()) {
+                order.collectionPhotoUrl = cloudProofUrl;
+                order.collectionPhotoBy = cloudProofBy;
+                order.collectionPhotoTime = cloudProofTime;
+            }
+            if (cloudVerifiedTime > 0) {
+                order.sellerVerifiedBy = cloudVerifiedBy;
+                order.sellerVerifiedTime = cloudVerifiedTime;
+            }
+            if (!cloudInvoice.isEmpty()) order.invoiceNumber = cloudInvoice;
+            if (cloudInvoiceTime > 0) order.invoiceFinalizedAt = cloudInvoiceTime;
             host.ordersPulledChanged = true;
             if (statusChanged) {
                 syncListingFor(order);
@@ -340,6 +535,10 @@ public class Order {
                 notifyReturnFieldChange(order);
             } else if (requestChanged) {
                 notifyCancellationFieldChange(order);
+            } else if (proofChanged && !oldProof.equals(order.collectionPhotoUrl)) {
+                notifyCollectionProofChange(order);
+            } else if (verifiedChanged && oldVerified <= 0) {
+                notifyCollectionVerified(order);
             }
             return;
         }
@@ -406,15 +605,40 @@ public class Order {
         record.payoutRequestedAt = pulledPayoutAt == null ? 0 : pulledPayoutAt;
         if (doc.getString("payoutMethod") != null) record.payoutMethod = doc.getString("payoutMethod");
         if (doc.getString("payoutSchedule") != null) record.payoutSchedule = doc.getString("payoutSchedule");
+        if (doc.getString("deliveryMethod") != null) record.deliveryMethod = doc.getString("deliveryMethod");
+        if (doc.getString("deliveryAddress") != null) record.deliveryAddress = doc.getString("deliveryAddress");
+        Double buyerLat = doc.getDouble("buyerLat"); Double buyerLng = doc.getDouble("buyerLng");
+        Double sellerLat = doc.getDouble("sellerLat"); Double sellerLng = doc.getDouble("sellerLng");
+        Long buyerLocationAt = doc.getLong("buyerLocationAt"); Long sellerLocationAt = doc.getLong("sellerLocationAt");
+        // Even if an old document still carries coordinates, never pull them
+        // into a finished or cancelled order.
+        if (record.canShareLiveLocation()) {
+            if (buyerLat != null) record.buyerLat = buyerLat;
+            if (buyerLng != null) record.buyerLng = buyerLng;
+            if (sellerLat != null) record.sellerLat = sellerLat;
+            if (sellerLng != null) record.sellerLng = sellerLng;
+            if (buyerLocationAt != null) record.buyerLocationAt = buyerLocationAt;
+            if (sellerLocationAt != null) record.sellerLocationAt = sellerLocationAt;
+        }
+        record.collectionPhotoUrl = doc.getString("collectionPhotoUrl") == null ? "" : doc.getString("collectionPhotoUrl");
+        record.collectionPhotoBy = doc.getString("collectionPhotoBy") == null ? "" : doc.getString("collectionPhotoBy");
+        Long proofTime = doc.getLong("collectionPhotoTime");
+        record.collectionPhotoTime = proofTime == null ? 0 : proofTime;
+        record.sellerVerifiedBy = doc.getString("sellerVerifiedBy") == null ? "" : doc.getString("sellerVerifiedBy");
+        Long verifiedTime = doc.getLong("sellerVerifiedTime");
+        record.sellerVerifiedTime = verifiedTime == null ? 0 : verifiedTime;
+        record.invoiceNumber = doc.getString("invoiceNumber") == null ? "" : doc.getString("invoiceNumber");
+        Long invoiceTime = doc.getLong("invoiceFinalizedAt");
+        record.invoiceFinalizedAt = invoiceTime == null ? 0 : invoiceTime;
         host.transactions.add(record);
         host.ordersPulledChanged = true;
         syncListingFor(record);
         // Notify the seller only when the request still needs them.
         if (record.isSeller(host.currentStudentEmail) && record.status.equals(MainActivity.TransactionRecord.REQUESTED)) {
             host.notification.addNotification(host.currentStudentEmail, "New purchase request",
-                    record.itemTitle, "payment", "");
+                    record.itemTitle, "payment", "", record.id);
             host.notification.showCampusNotification("New purchase request",
-                    record.itemTitle + ". Open Orders to approve or decline.", "payment");
+                    record.itemTitle + ". Open Orders to approve or decline.", "payment", "", record.id);
         }
     }
 
@@ -422,9 +646,19 @@ public class Order {
     public void syncListingFor(MainActivity.TransactionRecord order) {
         for (MainActivity.Product product : host.products) {
             if (!product.id.equals(order.productId)) continue;
-            if (!applyListingState(product)) return;
-            host.market.saveProducts();
-            host.market.cloudMirrorListing(product, false);
+            boolean changed = applyListingState(product);
+            if (product.status.equals("Sold")) {
+                long soldAt = order.sellerVerifiedTime > 0 ? order.sellerVerifiedTime
+                        : (order.createdTime > 0 ? order.createdTime : System.currentTimeMillis());
+                if (product.updatedTime < soldAt) {
+                    product.updatedTime = soldAt;
+                    changed = true;
+                }
+            }
+            if (changed) {
+                host.market.saveProducts();
+                host.market.cloudMirrorListing(product, false);
+            }
             return;
         }
     }
@@ -483,8 +717,8 @@ public class Order {
             } else {
                 title = "Order cancelled";
             }
-        } else if (order.status.equals(MainActivity.TransactionRecord.COMPLETED) && order.isSeller(host.currentStudentEmail)) {
-            title = "Order completed";
+        } else if (order.status.equals(MainActivity.TransactionRecord.COMPLETED)) {
+            title = order.isBuyer(host.currentStudentEmail) ? "Collection verified" : "Order completed";
         } else {
             return;
         }
@@ -492,7 +726,9 @@ public class Order {
         if (order.status.equals(MainActivity.TransactionRecord.HELD)) {
             body = order.itemTitle + " is confirmed. Arrange collection.";
         } else if (order.status.equals(MainActivity.TransactionRecord.COMPLETED)) {
-            body = order.itemTitle + " was collected.";
+            body = order.isBuyer(host.currentStudentEmail)
+                    ? order.itemTitle + " · seller verified your collection photo. Invoice ready."
+                    : order.itemTitle + " · collection verified and sold.";
         } else if (order.isSeller(host.currentStudentEmail)) {
             body = "Approved".equals(order.cancellationOutcome)
                     ? order.itemTitle + " cancellation was approved."
@@ -503,8 +739,8 @@ public class Order {
         } else {
             body = order.itemTitle + " is cancelled.";
         }
-        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "");
-        host.notification.showCampusNotification(title, body, "payment");
+        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "", order.id);
+        host.notification.showCampusNotification(title, body, "payment", "", order.id);
     }
 
     /** Tell the other student about a cancellation change. */
@@ -522,8 +758,26 @@ public class Order {
             return;
         }
         String body = order.itemTitle;
-        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "");
-        host.notification.showCampusNotification(title, body, "payment");
+        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "", order.id);
+        host.notification.showCampusNotification(title, body, "payment", "", order.id);
+    }
+
+    /** The seller needs to review the buyer's collection photo. */
+    public void notifyCollectionProofChange(MainActivity.TransactionRecord order) {
+        if (!order.isSeller(host.currentStudentEmail) || !order.collectionProofPending()) return;
+        String title = "Collection photo received";
+        String body = order.itemTitle + " · review the buyer's photo and verify the handover.";
+        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "", order.id);
+        host.notification.showCampusNotification(title, body, "payment", "", order.id);
+    }
+
+    /** The buyer hears when the seller has checked the handover photo. */
+    public void notifyCollectionVerified(MainActivity.TransactionRecord order) {
+        if (!order.isBuyer(host.currentStudentEmail) || order.sellerVerifiedTime <= 0) return;
+        String title = "Collection verified";
+        String body = order.itemTitle + " · the seller verified your collection photo. Invoice " + order.invoiceNumber + " is ready.";
+        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "", order.id);
+        host.notification.showCampusNotification(title, body, "payment", "", order.id);
     }
 
     /** Tell the other student about a return request or decision. */
@@ -541,8 +795,8 @@ public class Order {
             return;
         }
         String body = order.itemTitle;
-        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "");
-        host.notification.showCampusNotification(title, body, "payment");
+        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "", order.id);
+        host.notification.showCampusNotification(title, body, "payment", "", order.id);
     }
 
     // Unknown cloud statuses fall back to HELD instead of breaking the list.
@@ -610,6 +864,8 @@ public class Order {
                 doc.put("buyerPhone", order.buyerPhone);
                 doc.put("reference", order.reference);
                 doc.put("category", order.category);
+                doc.put("deliveryMethod", order.deliveryMethod);
+                doc.put("deliveryAddress", order.deliveryAddress);
                 doc.put("status", "REQUESTED");
                 doc.put("createdAt", com.google.firebase.Timestamp.now());
                 com.google.firebase.firestore.FirebaseFirestore.getInstance()
@@ -664,8 +920,48 @@ public class Order {
             update.put("payoutMethod", order.payoutMethod);
             update.put("payoutSchedule", order.payoutSchedule);
         }
+        if (order.deliveryMethod != null && !order.deliveryMethod.isEmpty()) {
+            update.put("deliveryMethod", order.deliveryMethod);
+        }
+        if (order.deliveryAddress != null && !order.deliveryAddress.isEmpty()) {
+            update.put("deliveryAddress", order.deliveryAddress);
+        }
+        // Never upload a position after the delivery is finished or closed.
+        if (order.canShareLiveLocation()) {
+            if (order.buyerLat != 0 && order.buyerLocationAt > 0) {
+                update.put("buyerLat", order.buyerLat);
+                update.put("buyerLng", order.buyerLng);
+                update.put("buyerLocationAt", order.buyerLocationAt);
+            }
+            if (order.sellerLat != 0 && order.sellerLocationAt > 0) {
+                update.put("sellerLat", order.sellerLat);
+                update.put("sellerLng", order.sellerLng);
+                update.put("sellerLocationAt", order.sellerLocationAt);
+            }
+        } else {
+            order.clearSharedLocations();
+        }
+        if (order.hasCollectionProof()) {
+            update.put("collectionPhotoUrl", order.collectionPhotoUrl);
+            update.put("collectionPhotoBy", order.collectionPhotoBy);
+            update.put("collectionPhotoTime", order.collectionPhotoTime);
+        }
+        if (order.sellerVerifiedTime > 0) {
+            update.put("sellerVerifiedBy", order.sellerVerifiedBy);
+            update.put("sellerVerifiedTime", order.sellerVerifiedTime);
+        }
+        if (order.invoiceNumber != null && !order.invoiceNumber.isEmpty()) {
+            update.put("invoiceNumber", order.invoiceNumber);
+            update.put("invoiceFinalizedAt", order.invoiceFinalizedAt);
+        }
         com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("orders")
                 .document(order.id).update(update)
+                .addOnSuccessListener(unused -> {
+                    if (order.status.equals(MainActivity.TransactionRecord.COMPLETED)
+                            || order.status.equals(MainActivity.TransactionRecord.CANCELLED)) {
+                        clearCloudLocations(order.id);
+                    }
+                })
                 .addOnFailureListener(e -> {
                     android.util.Log.d("CampusTrade", "order update failed: " + e.getMessage());
                     host.ui.showCloudRetry("Order saved on this device",
@@ -673,6 +969,22 @@ public class Order {
                                     + e.getMessage(),
                             () -> cloudUpdateOrder(order));
                 });
+    }
+
+    /** Remove live positions from the cloud after the handover is over. */
+    private void clearCloudLocations(String orderId) {
+        java.util.Map<String, Object> update = new java.util.HashMap<>();
+        update.put("buyerLat", 0.0);
+        update.put("buyerLng", 0.0);
+        update.put("buyerLocationAt", 0L);
+        update.put("sellerLat", 0.0);
+        update.put("sellerLng", 0.0);
+        update.put("sellerLocationAt", 0L);
+        update.put("updatedAt", com.google.firebase.Timestamp.now());
+        com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("orders")
+                .document(orderId).update(update)
+                .addOnFailureListener(e -> android.util.Log.w("CampusTrade",
+                        "location cleanup failed: " + e.getMessage()));
     }
 
     // Checkout checks the order and never stores payment details.
@@ -685,6 +997,9 @@ public class Order {
             showTransactionHistory();
             return;
         }
+        if (!host.requireProfilePhoto()) return;
+        // Pull accepted offers before quoting so checkout uses the agreed price.
+        if (host.market.refreshOffers(() -> showPaymentDialog(product))) return;
         // Use the reserved amount when the current student holds the reservation.
         CampusFeatures.Offer reservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
         if (reservation != null && !reservation.buyer.equals(host.currentStudentEmail)) {
@@ -756,9 +1071,31 @@ public class Order {
         host.ui.themedToggle(preferMethod);
         if (!freeItem) form.addView(preferMethod);
 
-        form.addView(host.ui.label("Collection"));
-        form.addView(host.ui.bodyText(product.location + " / " + product.delivery, host.text, 13));
-        form.addView(host.ui.bodyText("Arrange pickup with the seller after placing your order. Pay them directly using your agreed method.", host.muted, 12));
+        boolean defaultsToDelivery = product.delivery != null
+                && product.delivery.toLowerCase(Locale.ROOT).contains("delivery")
+                && !product.delivery.toLowerCase(Locale.ROOT).contains("pickup or");
+        final String[] fulfilment = {defaultsToDelivery ? "Local delivery" : "Campus pickup"};
+
+        LinearLayout pickupPanel = host.ui.workflowForm();
+        TextView pickupTitle = host.ui.titleText("Campus pickup", host.text, 13);
+        pickupPanel.addView(pickupTitle);
+        TextView pickupLocation = host.ui.bodyText(product.location + " · " + product.delivery, host.text, 12);
+        pickupPanel.addView(pickupLocation);
+        form.addView(pickupPanel);
+
+        LinearLayout deliveryPanel = host.ui.workflowForm();
+        deliveryPanel.addView(host.ui.titleText("Delivery details", host.text, 13));
+        deliveryPanel.addView(host.ui.bodyText("Give the seller a clear drop-off address. You can share live location after the seller accepts.", host.muted, 12));
+        EditText deliveryAddressInput = host.ui.listingField(deliveryPanel, "Delivery address", "Street, suburb, campus gate", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_POSTAL_ADDRESS);
+        Button previewMap = host.ui.secondaryButton("Preview delivery map");
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(44));
+        previewParams.topMargin = host.ui.dp(6);
+        deliveryPanel.addView(previewMap, previewParams);
+        previewMap.setOnClickListener(v -> DeliveryMap.showAddressPreview(host,
+                host.ui.text(deliveryAddressInput).trim(), product.location));
+        form.addView(deliveryPanel);
+        pickupPanel.setVisibility(defaultsToDelivery ? View.GONE : View.VISIBLE);
+        deliveryPanel.setVisibility(defaultsToDelivery ? View.VISIBLE : View.GONE);
         // Checkout is full screen; the action stays at the bottom.
         Dialog page = host.ui.fullScreenForm();
         LinearLayout root = new LinearLayout(host);
@@ -793,13 +1130,21 @@ public class Order {
                 buyerPhoneInput.requestFocus();
                 return;
             }
+            final String deliveryAddress = host.ui.text(deliveryAddressInput).trim();
+            if (fulfilment[0].equals("Local delivery") && deliveryAddress.length() < 6) {
+                deliveryAddressInput.setError("Enter the delivery address");
+                checkoutScroll.smoothScrollTo(0, deliveryAddressInput.getTop());
+                deliveryAddressInput.requestFocus();
+                return;
+            }
             if (!freeItem && selectedMethod[0].usesCard()) {
                 String error = MainActivity.CardValidator.validationError(host.ui.text(cardholder), host.ui.text(cardNumber), host.ui.text(cardExpiry), host.ui.text(cardCode), System.currentTimeMillis());
                 if (error != null) { host.ui.showSimpleMessage("Check card details", error); return; }
             }
             String bank = "";
             String finalReference = reference;
-            showCheckoutConfirm(product, quotedPrice, method, bank, buyer, phone, finalReference, () -> {
+            showCheckoutConfirm(product, quotedPrice, method, bank, buyer, phone, finalReference,
+                    fulfilment[0], deliveryAddress, () -> {
                 // Brief wait while the order is saved.
                 pay.setEnabled(false);
                 pay.setText("Sending...");
@@ -823,6 +1168,8 @@ public class Order {
                             method, buyer, phone, finalReference, paidAt, product.sellerEmail,
                             host.currentStudentEmail, product.category, MainActivity.TransactionRecord.REQUESTED, product.id);
                     order.sellerName = host.studentName(product.sellerEmail);
+                    order.deliveryMethod = fulfilment[0];
+                    order.deliveryAddress = fulfilment[0].equals("Local delivery") ? deliveryAddress : "";
                     order.createdTime = System.currentTimeMillis();
                     host.transactions.add(order);
                     // Remove the order if saving fails so the screen matches storage.
@@ -837,10 +1184,7 @@ public class Order {
                     product.status = order.listingState();
                     host.market.saveProducts();
                     host.market.cloudMirrorListing(product, false);
-                    // Send the seller an Inbox message and a push.
-                    host.inbox.localMessage(product.sellerEmail, "New purchase request " + transactionId + " for "
-                            + product.title + " (R" + quotedPrice + ", " + order.listingState()
-                            + "). Open Orders & transactions to approve or decline.");
+                    // Send the seller a push and notification, not a chat message.
                     cloudPushOrder(order, product);
                     try { host.featureStore.update(f -> f.closeOffers(product.id)); } catch (RuntimeException e) { Toast.makeText(host, e.getMessage(), Toast.LENGTH_LONG).show(); }
                     page.dismiss();
@@ -848,9 +1192,9 @@ public class Order {
                     host.buyingOrders = true;
                     if (!freeItem && preferMethod.isChecked()) host.settingsPrefs().edit().putString("payment_method", method).apply();
                     host.showAppScreen("Payments");
-                    host.notification.showCampusNotification("Request sent", "Your request is waiting for the seller to confirm.", "payment");
-                    host.notification.addNotification(product.sellerEmail, "Purchase request", product.title + " - " + transactionId, "payment", "");
-                    host.notification.sendPush(product.sellerEmail, "Purchase request", product.title + " - " + transactionId, "payment", "");
+                    host.notification.showCampusNotification("Request sent", "Your request is waiting for the seller to confirm.", "payment", "", transactionId);
+                    host.notification.addNotification(product.sellerEmail, "Purchase request", product.title + " - " + transactionId, "payment", "", transactionId);
+                    host.notification.sendPush(product.sellerEmail, "Purchase request", product.title + " - " + transactionId, "payment", "", transactionId);
                     // Show the receipt if the student's setting is on.
                     if (host.settingsPrefs().getBoolean("payment_receipt_auto", true)) showReceipt(order);
                 }, 900);
@@ -892,7 +1236,7 @@ public class Order {
         TextView visa = new TextView(host);
         visa.setText("VISA");
         visa.setTextColor(Color.rgb(26, 31, 113));
-        visa.setTypeface(Typeface.DEFAULT, Typeface.BOLD | Typeface.ITALIC);
+        visa.setTypeface(Typeface.DEFAULT, Typeface.BOLD_ITALIC);
         visa.setTextSize(15);
         visa.setPadding(host.ui.dp(10), host.ui.dp(3), host.ui.dp(10), host.ui.dp(3));
         visa.setBackground(host.ui.round(Color.WHITE, 4));
@@ -1153,9 +1497,9 @@ public class Order {
                 withdraw.setOnClickListener(v -> {
                     if (saveOrderChange(order, () -> order.withdrawCancellation(host.currentStudentEmail, System.currentTimeMillis()))) {
                         if (sheetRef[0] != null) sheetRef[0].dismiss();
-                        host.notification.showCampusNotification("Cancellation request withdrawn", "The order remains awaiting collection.", "payment");
+                        host.notification.showCampusNotification("Cancellation request withdrawn", "The order remains awaiting collection.", "payment", "", order.id);
                         host.notification.addNotification(order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail,
-                                "Cancellation request withdrawn", order.itemTitle, "payment", "");
+                                "Cancellation request withdrawn", order.itemTitle, "payment", "", order.id);
                     }
                 });
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
@@ -1220,9 +1564,9 @@ public class Order {
                 if (saveOrderChange(order, () -> order.requestCancellation(host.currentStudentEmail, explanation, System.currentTimeMillis()))) {
                     if (sheetRef[0] != null) sheetRef[0].dismiss();
                     host.notification.addNotification(order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail,
-                            "Cancellation requested", explanation, "payment", "");
+                            "Cancellation requested", explanation, "payment", "", order.id);
                     host.notification.showCampusNotification("Cancellation request sent",
-                            "Waiting for the other student's decision.", "payment");
+                            "Waiting for the other student's decision.", "payment", "", order.id);
                 }
             });
             LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
@@ -1258,9 +1602,9 @@ public class Order {
                     if (saveOrderChange(order, () -> order.withdrawReturn(host.currentStudentEmail, System.currentTimeMillis()))) {
                         if (sheetRef[0] != null) sheetRef[0].dismiss();
                         host.notification.addNotification(order.sellerEmail, "Return request withdrawn",
-                                order.itemTitle, "payment", "");
+                                order.itemTitle, "payment", "", order.id);
                         host.notification.showCampusNotification("Return request withdrawn",
-                                "The order remains completed.", "payment");
+                                "The order remains completed.", "payment", "", order.id);
                     }
                 });
                 body.addView(withdraw, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48)));
@@ -1270,9 +1614,9 @@ public class Order {
                     if (saveOrderChange(order, () -> order.resolveReturn(host.currentStudentEmail, true, System.currentTimeMillis()))) {
                         if (sheetRef[0] != null) sheetRef[0].dismiss();
                         host.notification.addNotification(order.buyerEmail, "Return approved",
-                                order.itemTitle + " · the seller approved the return.", "payment", "");
+                                order.itemTitle + " · the seller approved the return.", "payment", "", order.id);
                         host.notification.showCampusNotification("Return approved",
-                                "Arrange the handover with the buyer.", "payment");
+                                "Arrange the handover with the buyer.", "payment", "", order.id);
                     }
                 });
                 body.addView(approve, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48)));
@@ -1283,9 +1627,9 @@ public class Order {
                     if (saveOrderChange(order, () -> order.resolveReturn(host.currentStudentEmail, false, System.currentTimeMillis()))) {
                         if (sheetRef[0] != null) sheetRef[0].dismiss();
                         host.notification.addNotification(order.buyerEmail, "Return declined",
-                                order.itemTitle + " · the seller declined the return.", "payment", "");
+                                order.itemTitle + " · the seller declined the return.", "payment", "", order.id);
                         host.notification.showCampusNotification("Return declined",
-                                "The order remains completed.", "payment");
+                                "The order remains completed.", "payment", "", order.id);
                     }
                 });
                 body.addView(decline, declineParams);
@@ -1336,9 +1680,9 @@ public class Order {
                 if (saveOrderChange(order, () -> order.requestReturn(host.currentStudentEmail, explanation, System.currentTimeMillis()))) {
                     if (sheetRef[0] != null) sheetRef[0].dismiss();
                     host.notification.addNotification(order.sellerEmail, "Return requested",
-                            order.itemTitle + " · " + explanation, "payment", "");
+                            order.itemTitle + " · " + explanation, "payment", "", order.id);
                     host.notification.showCampusNotification("Return request sent",
-                            "Waiting for the seller's decision.", "payment");
+                            "Waiting for the seller's decision.", "payment", "", order.id);
                 }
             });
             body.addView(send, sendParams);
@@ -1399,8 +1743,8 @@ public class Order {
     public void resolveOrderCancellation(MainActivity.TransactionRecord order, boolean approve) {
         if (saveOrderChange(order, () -> order.resolveCancellation(host.currentStudentEmail, approve, System.currentTimeMillis()))) {
             host.notification.addNotification(order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail,
-                    approve ? "Order cancelled" : "Cancellation declined", order.itemTitle + " · cancellation " + (approve ? "approved" : "declined"), "payment", "");
-            host.notification.showCampusNotification(approve ? "Order cancelled" : "Cancellation declined", order.itemTitle, "payment");
+                    approve ? "Order cancelled" : "Cancellation declined", order.itemTitle + " · cancellation " + (approve ? "approved" : "declined"), "payment", "", order.id);
+            host.notification.showCampusNotification(approve ? "Order cancelled" : "Cancellation declined", order.itemTitle, "payment", "", order.id);
         }
     }
 
@@ -1444,7 +1788,16 @@ public class Order {
 
     public void showReceipt(MainActivity.TransactionRecord record) {
         if (!record.isBuyer(host.currentStudentEmail) && !record.isSeller(host.currentStudentEmail)) return;
+        if (currentReceiptPage != null && currentReceiptPage.isShowing()) currentReceiptPage.dismiss();
         Dialog page = host.ui.fullScreenForm();
+        currentReceiptPage = page;
+        currentReceiptId = record.id;
+        page.setOnDismissListener(d -> {
+            if (currentReceiptPage == page) {
+                currentReceiptPage = null;
+                currentReceiptId = "";
+            }
+        });
         LinearLayout root = new LinearLayout(host);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(host.page);
@@ -1493,13 +1846,39 @@ public class Order {
         paymentLine(details, "Buyer", record.buyerName);
         paymentLine(details, "Seller", record.sellerName != null && !record.sellerName.isEmpty()
                 ? record.sellerName : host.studentName(record.sellerEmail));
+        paymentLine(details, "Fulfilment", record.deliveryMethod);
+        if (record.deliveryOrder()) paymentLine(details, "Delivery address", record.deliveryAddress);
+        if (!record.invoiceNumber.isEmpty()) paymentLine(details, "Invoice", record.invoiceNumber);
         if (!record.reference.isEmpty()) paymentLine(details, "Collection note", record.reference);
         LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         detailsParams.topMargin = host.ui.dp(14);
         content.addView(details, detailsParams);
-        content.addView(host.ui.bodyText("CampusTrade does not process or hold money. Payment and collection are arranged directly between students.",
+        if (record.hasCollectionProof()) {
+            LinearLayout proof = host.ui.card(host.surface(), 14, host.ui.dp(16));
+            proof.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+            proof.addView(host.ui.titleText("Collection proof", host.text, 14));
+            ImageView image = new ImageView(host);
+            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            com.bumptech.glide.Glide.with(host).load(record.collectionPhotoUrl).into(image);
+            proof.addView(image, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(190)));
+            proof.addView(host.ui.bodyText(record.sellerVerifiedTime > 0
+                    ? "Verified by seller " + host.studentName(record.sellerVerifiedBy)
+                    : "Waiting for seller verification", host.muted, 11));
+            LinearLayout.LayoutParams proofParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            proofParams.topMargin = host.ui.dp(14);
+            content.addView(proof, proofParams);
+        }
+        content.addView(host.ui.bodyText("CampusTrade does not process or hold money. Payment and handover are arranged directly between students.",
                 host.muted, 11));
+        if (completed && !record.invoiceNumber.isEmpty()) {
+            Button invoice = host.ui.secondaryButton("Email invoice " + record.invoiceNumber);
+            LinearLayout.LayoutParams invoiceParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+            invoiceParams.topMargin = host.ui.dp(10);
+            invoice.setOnClickListener(v -> InvoiceMailer.emailInvoice(host, record));
+            content.addView(invoice, invoiceParams);
+        }
 
         View footerRule = new View(host);
         footerRule.setBackgroundColor(host.line);
@@ -1652,7 +2031,11 @@ public class Order {
             filterParams.rightMargin = host.ui.dp(8);
             filters.addView(filter, filterParams);
         }
-        filterScroll.addView(filters); content.addView(filterScroll);
+        filterScroll.addView(filters);
+        LinearLayout.LayoutParams filterScrollParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        filterScrollParams.topMargin = host.ui.dp(10);
+        content.addView(filterScroll, filterScrollParams);
         LinearLayout history = new LinearLayout(host);
         history.setOrientation(LinearLayout.VERTICAL);
         content.addView(history);
@@ -1686,7 +2069,8 @@ public class Order {
             if (host.paymentStatusFilter.equals("Awaiting") && !order.status.equals(MainActivity.TransactionRecord.HELD)) continue;
             if (host.paymentStatusFilter.equals("Completed") && !order.status.equals(MainActivity.TransactionRecord.COMPLETED)) continue;
             if (host.paymentStatusFilter.equals("Cancelled") && !order.status.equals(MainActivity.TransactionRecord.CANCELLED)) continue;
-            String searchable = order.itemTitle + " " + order.id + " " + order.buyerName + " " + order.sellerEmail + " " + order.method;
+            String searchable = order.itemTitle + " " + order.id + " " + order.buyerName + " " + order.sellerEmail
+                    + " " + order.method + " " + order.deliveryMethod + " " + order.deliveryAddress;
             if (!searchable.toLowerCase(Locale.ROOT).contains(host.paymentQuery.trim().toLowerCase(Locale.ROOT))) continue;
             if (shown++ > 0) host.ui.addMenuDivider(orders);
             LinearLayout row = host.ui.horizontal();
@@ -1717,6 +2101,20 @@ public class Order {
             subtitle.setPadding(0, host.ui.dp(4), 0, 0);
             copy.addView(subtitle);
             copy.addView(host.ui.bodyText(order.method + " · " + order.paidAt, host.muted, 10));
+            if (order.deliveryOrder()) {
+                copy.addView(host.ui.bodyText("Delivery · " + (order.deliveryAddress.isEmpty() ? "address pending" : order.deliveryAddress),
+                        host.muted, 10));
+            } else {
+                CampusFeatures.Pickup currentPickup = host.featureStore.data.pickup(order.id);
+                if (currentPickup != null) {
+                    copy.addView(host.ui.bodyText("Pickup v" + Math.max(1, currentPickup.revision) + " · " + currentPickup.location,
+                            host.muted, 10));
+                }
+            }
+            if (order.collectionProofPending()) {
+                copy.addView(host.ui.bodyText(order.isSeller(host.currentStudentEmail)
+                        ? "Verify collection photo" : "Photo sent · seller verifying", host.blue, 10));
+            }
             if (needsBuyerReview(order)) copy.addView(host.ui.bodyText("Review required · tap to rate", host.blue, 11));
             row.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             LinearLayout status = new LinearLayout(host);
@@ -1771,7 +2169,18 @@ public class Order {
     // Order details use a full page; secondary actions use a sheet.
     public void showOrderDetails(MainActivity.TransactionRecord order) {
         if (!order.isBuyer(host.currentStudentEmail) && !order.isSeller(host.currentStudentEmail)) return;
+        if (currentOrderPage != null && currentOrderPage.isShowing()) {
+            currentOrderPage.dismiss();
+        }
         Dialog page = host.ui.fullScreenForm();
+        currentOrderPage = page;
+        currentOrderId = order.id;
+        page.setOnDismissListener(d -> {
+            if (currentOrderPage == page) {
+                currentOrderPage = null;
+                currentOrderId = "";
+            }
+        });
         LinearLayout root = new LinearLayout(host);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(host.page);
@@ -1813,9 +2222,23 @@ public class Order {
         if (!buyer && order.status.equals(MainActivity.TransactionRecord.REQUESTED)) {
             primary.setText("Approve purchase");
             primary.setOnClickListener(v -> { page.dismiss(); approvePurchaseRequest(order); });
-        } else if (buyer && order.status.equals(MainActivity.TransactionRecord.HELD) && !order.cancellationPending()) {
-            primary.setText("Confirm collection");
-            primary.setOnClickListener(v -> confirmCollection(order, page));
+        } else if (order.status.equals(MainActivity.TransactionRecord.HELD) && !order.cancellationPending()) {
+            if (buyer && !order.hasCollectionProof()) {
+                primary.setText("Photograph collection");
+                primary.setOnClickListener(v -> promptCollectionPhoto(order));
+            } else if (buyer) {
+                primary.setText(order.sellerVerifiedTime > 0 ? "Order verified" : "Waiting for seller verification");
+                primary.setOnClickListener(v -> showCollectionProof(order));
+            } else if (order.collectionProofPending()) {
+                primary.setText("Verify collection photo");
+                primary.setOnClickListener(v -> showCollectionProof(order));
+            } else {
+                primary.setText("Chat with buyer");
+                primary.setOnClickListener(v -> {
+                    page.dismiss();
+                    host.inbox.showConversation(order.buyerEmail);
+                });
+            }
         } else if (order.returnPending()) {
             primary.setText(buyer ? "Return status" : "Review return");
             primary.setOnClickListener(v -> showReturnCenter(order));
@@ -1899,43 +2322,157 @@ public class Order {
             addOrderStep(steps, 3, "Order cancelled",
                     order.cancellationOutcome.isEmpty() ? "This order was cancelled" : order.cancellationOutcome,
                     true, false, true);
+        } else if (order.deliveryOrder()) {
+            addOrderStep(steps, 3, "Delivery",
+                    order.deliveryAddress.isEmpty() ? "Waiting for a delivery address"
+                            : order.deliveryAddress,
+                    confirmed, confirmed && !completed, false);
+            addOrderStep(steps, 4, "Delivery verified",
+                    completed ? "Seller verified the collection photo"
+                            : order.collectionProofPending() ? "Buyer photo submitted · waiting for seller"
+                            : "Buyer photographs the handover; seller verifies it",
+                    completed, order.collectionProofPending(), false);
         } else {
             addOrderStep(steps, 3, "Collection",
                     pickup == null ? (confirmed ? "Arrange a campus pickup" : "Unlocks after confirmation")
                             : pickup.location + " · " + host.messageTime(pickup.time),
                     pickupAgreed, confirmed && !pickupAgreed && !completed, false);
             addOrderStep(steps, 4, "Collected",
-                    completed ? "Buyer confirmed collection" : "Waiting for the buyer to confirm",
-                    completed, false, false);
+                    completed ? "Seller verified the buyer's collection photo"
+                            : order.collectionProofPending() ? "Buyer photo submitted · waiting for seller"
+                            : "Buyer photographs the item; seller verifies it",
+                    completed, order.collectionProofPending(), false);
         }
         content.addView(steps);
 
-        content.addView(orderSectionTitle("Pickup"));
-        LinearLayout pickupCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
-        pickupCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
-        if (pickup == null) {
-            pickupCard.addView(host.ui.titleText(cancelled ? "Pickup closed" : "No pickup planned yet", host.text, 14));
-            pickupCard.addView(host.ui.bodyText(cancelled ? "Cancelled orders no longer need a handover."
-                            : confirmed ? "Agree a public campus spot and a time with the other student."
-                            : "Pickup details unlock once the seller confirms this request.", host.muted, 12));
+        if (order.deliveryOrder()) {
+            content.addView(orderSectionTitle("Delivery tracking"));
+            LinearLayout deliveryCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
+            deliveryCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+            deliveryCard.addView(host.ui.titleText("Delivery", host.text, 14));
+            deliveryCard.addView(host.ui.bodyText(order.deliveryAddress.isEmpty()
+                    ? "No drop-off address yet." : order.deliveryAddress, host.muted, 12));
+            boolean tracking = order.canShareLiveLocation();
+            if (tracking) {
+                deliveryCard.addView(host.ui.bodyText("Live positions are shared only while this delivery is active. CampusTrade does not track anyone in the background.",
+                        host.muted, 11));
+                paymentLine(deliveryCard, "Buyer location", deliveryLocationLabel(order.buyerLocationAt));
+                paymentLine(deliveryCard, "Seller location", deliveryLocationLabel(order.sellerLocationAt));
+                Button liveMap = host.ui.secondaryButton("Open delivery map");
+                LinearLayout.LayoutParams mapParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+                mapParams.topMargin = host.ui.dp(10);
+                liveMap.setOnClickListener(v -> DeliveryMap.showOrder(host, order));
+                deliveryCard.addView(liveMap, mapParams);
+                Button shareLocation = host.ui.secondaryButton("Share my live location");
+                LinearLayout.LayoutParams shareParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+                shareParams.topMargin = host.ui.dp(6);
+                shareLocation.setOnClickListener(v -> DeliveryMap.requestLiveShare(host, order));
+                deliveryCard.addView(shareLocation, shareParams);
+            } else {
+                String closed = cancelled
+                        ? "This order is closed. The live map and location sharing are no longer available."
+                        : order.status.equals(MainActivity.TransactionRecord.COMPLETED)
+                                ? "Delivery confirmed. The live map and both students' locations are now closed."
+                                : "The live map unlocks after the seller confirms this delivery.";
+                deliveryCard.addView(host.ui.bodyText(closed, host.muted, 11));
+            }
+            content.addView(deliveryCard);
         } else {
-            LinearLayout pickupTop = host.ui.horizontal();
-            pickupTop.setGravity(Gravity.CENTER_VERTICAL);
-            pickupTop.addView(host.ui.titleText(pickup.location, host.text, 14), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            pickupTop.addView(host.ui.statusPill(pickupAgreed ? "Agreed" : "Awaiting"));
-            pickupCard.addView(pickupTop);
-            pickupCard.addView(host.ui.bodyText(host.messageTime(pickup.time), host.muted, 12));
-            pickupCard.addView(pickupTickRow("Buyer confirmed", pickup.confirmed.contains(order.buyerEmail)));
-            pickupCard.addView(pickupTickRow("Seller confirmed", pickup.confirmed.contains(order.sellerEmail)));
+            content.addView(orderSectionTitle("Pickup"));
+            LinearLayout pickupCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
+            pickupCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+            if (pickup == null) {
+                pickupCard.addView(host.ui.titleText(cancelled ? "Pickup closed" : "No pickup planned yet", host.text, 14));
+                pickupCard.addView(host.ui.bodyText(cancelled ? "Cancelled orders no longer need a handover."
+                                : confirmed ? "Agree a public campus spot and a time with the other student."
+                                : "Pickup details unlock once the seller confirms this request.", host.muted, 12));
+            } else {
+                LinearLayout pickupTop = host.ui.horizontal();
+                pickupTop.setGravity(Gravity.CENTER_VERTICAL);
+                pickupTop.addView(host.ui.titleText(pickup.location, host.text, 14), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                pickupTop.addView(host.ui.statusPill(pickupAgreed ? "Agreed" : "Awaiting"));
+                pickupCard.addView(pickupTop);
+                pickupCard.addView(host.ui.bodyText(host.messageTime(pickup.time), host.muted, 12));
+                pickupCard.addView(host.ui.bodyText(pickupRevisionLabel(pickup), host.muted, 11));
+                pickupCard.addView(pickupTickRow("Buyer confirmed", pickup.confirmed.contains(order.buyerEmail)));
+                pickupCard.addView(pickupTickRow("Seller confirmed", pickup.confirmed.contains(order.sellerEmail)));
+            }
+            if (confirmed && !completed && !cancelled) {
+                Button managePickup = host.ui.secondaryButton(pickup == null ? "Arrange pickup" : "Change pickup");
+                LinearLayout.LayoutParams manageParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+                manageParams.topMargin = host.ui.dp(12);
+                managePickup.setOnClickListener(v -> host.market.pickupActions(order));
+                pickupCard.addView(managePickup, manageParams);
+            }
+            content.addView(pickupCard);
         }
-        if (confirmed && !completed && !cancelled) {
-            Button managePickup = host.ui.secondaryButton(pickup == null ? "Arrange pickup" : "Manage pickup");
-            LinearLayout.LayoutParams manageParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
-            manageParams.topMargin = host.ui.dp(12);
-            managePickup.setOnClickListener(v -> host.market.pickupActions(order));
-            pickupCard.addView(managePickup, manageParams);
+
+        content.addView(orderSectionTitle("Collection photo"));
+        LinearLayout proofCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
+        proofCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+        if (order.hasCollectionProof()) {
+            ImageView proof = new ImageView(host);
+            proof.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            com.bumptech.glide.Glide.with(host).load(order.collectionPhotoUrl).into(proof);
+            proofCard.addView(proof, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(180)));
+            proofCard.addView(host.ui.bodyText("Photographed by " + host.studentName(order.collectionPhotoBy)
+                    + " · " + host.messageTime(order.collectionPhotoTime), host.muted, 11));
+            if (order.sellerVerifiedTime > 0) {
+                proofCard.addView(host.ui.titleText("Verified by seller", host.readableInk(host.green), 13));
+                proofCard.addView(host.ui.bodyText(host.studentName(order.sellerVerifiedBy) + " · "
+                        + host.messageTime(order.sellerVerifiedTime), host.muted, 11));
+            } else if (order.isSeller(host.currentStudentEmail) && order.collectionProofPending()) {
+                proofCard.addView(host.ui.bodyText("Review the photo and verify the handover to complete this order. The buyer cannot complete it alone.",
+                        host.muted, 11));
+                Button verify = host.ui.primaryButton("Review & verify collection");
+                LinearLayout.LayoutParams verifyParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+                verifyParams.topMargin = host.ui.dp(10);
+                verify.setOnClickListener(v -> confirmSellerVerification(order));
+                proofCard.addView(verify, verifyParams);
+            } else if (order.collectionProofPending()) {
+                proofCard.addView(host.ui.bodyText("Waiting for the seller to verify this photo. The order stays reserved until they do.",
+                        host.muted, 12));
+            }
+            if (order.isBuyer(host.currentStudentEmail) && order.collectionProofPending()) {
+                TextView replace = host.ui.textButton("Replace photo");
+                replace.setPadding(0, host.ui.dp(6), 0, 0);
+                replace.setOnClickListener(v -> promptCollectionPhoto(order));
+                proofCard.addView(replace);
+            }
+        } else if (order.status.equals(MainActivity.TransactionRecord.HELD) && order.isBuyer(host.currentStudentEmail)) {
+            proofCard.addView(host.ui.titleText("Photo required", host.text, 14));
+            proofCard.addView(host.ui.bodyText("Take a clear photo of the received item. The seller will check it before the order completes. Tapping a button can never complete an order on its own.",
+                    host.muted, 12));
+            Button photo = host.ui.primaryButton("Photograph collection");
+            LinearLayout.LayoutParams photoParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+            photoParams.topMargin = host.ui.dp(10);
+            photo.setOnClickListener(v -> promptCollectionPhoto(order));
+            proofCard.addView(photo, photoParams);
+        } else {
+            proofCard.addView(host.ui.titleText("No collection photo yet", host.text, 14));
+            proofCard.addView(host.ui.bodyText("The buyer must photograph the received item once the handover is happening. The seller then verifies it.",
+                    host.muted, 12));
         }
-        content.addView(pickupCard);
+        content.addView(proofCard);
+
+        if (!order.invoiceNumber.isEmpty()) {
+            content.addView(orderSectionTitle("Invoice"));
+            LinearLayout invoice = host.ui.card(host.surface(), 14, host.ui.dp(14));
+            invoice.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+            paymentLine(invoice, "Invoice number", order.invoiceNumber);
+            if (order.invoiceFinalizedAt > 0) paymentLine(invoice, "Finalised",
+                    new SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(new Date(order.invoiceFinalizedAt)));
+            paymentLine(invoice, "Billed to", order.buyerEmail);
+            paymentLine(invoice, "Seller", order.sellerEmail);
+            invoice.addView(host.ui.bodyText("CampusTrade does not process payment. This invoice records the cash or EFT arrangement between the two students.",
+                    host.muted, 11));
+            Button emailInvoice = host.ui.secondaryButton("Email invoice");
+            LinearLayout.LayoutParams emailParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+            emailParams.topMargin = host.ui.dp(8);
+            emailInvoice.setOnClickListener(v -> InvoiceMailer.emailInvoice(host, order));
+            invoice.addView(emailInvoice, emailParams);
+            content.addView(invoice);
+        }
 
         content.addView(orderSectionTitle("Contact"));
         LinearLayout contact = host.ui.card(host.surface(), 14, host.ui.dp(14));
@@ -1972,8 +2509,11 @@ public class Order {
         paymentLine(collection, "Collection note", order.reference.isEmpty() ? "None" : order.reference);
         MainActivity.Product ordered = null;
         for (MainActivity.Product product : host.products) if (product.id.equals(order.productId)) { ordered = product; break; }
-        paymentLine(collection, "Handover", ordered == null ? "Campus pickup" : ordered.location);
-        collection.addView(host.ui.bodyText("CampusTrade does not process or hold money. Settle payment directly with the other student at collection.",
+        paymentLine(collection, "Fulfilment", order.deliveryMethod);
+        paymentLine(collection, "Handover", order.deliveryOrder()
+                ? (order.deliveryAddress.isEmpty() ? "Delivery address pending" : order.deliveryAddress)
+                : ordered == null ? "Campus pickup" : ordered.location);
+        collection.addView(host.ui.bodyText("CampusTrade does not process or hold money. Settle payment directly with the other student at handover.",
                 host.muted, 11));
         content.addView(collection);
 
@@ -2065,13 +2605,152 @@ public class Order {
         return digits.length() <= count ? digits : digits.substring(digits.length() - count);
     }
 
-    private void confirmCollection(MainActivity.TransactionRecord order, Dialog page) {
+    /** Buyer starts the only valid collection confirmation: a photo. */
+    public void promptCollectionPhoto(MainActivity.TransactionRecord order) {
+        if (order == null || !order.isBuyer(host.currentStudentEmail)
+                || !order.status.equals(MainActivity.TransactionRecord.HELD)) return;
+        LinearLayout body = new LinearLayout(host);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, host.ui.dp(4), 0, 0);
+        body.addView(host.ui.bodyText("Photograph the item you received. The seller must review that photo before the order completes. A tap alone cannot complete the order.",
+                host.muted, 12));
+        if (order.hasCollectionProof()) {
+            body.addView(host.ui.bodyText("A photo is already waiting for the seller. You can replace it before they verify.",
+                    host.muted, 11));
+        }
+        Button camera = host.ui.primaryButton(order.hasCollectionProof() ? "Retake photo" : "Take collection photo");
+        LinearLayout.LayoutParams cameraParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
+        cameraParams.topMargin = host.ui.dp(10);
+        body.addView(camera, cameraParams);
+        Button gallery = host.ui.secondaryButton("Choose from gallery");
+        LinearLayout.LayoutParams galleryParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+        galleryParams.topMargin = host.ui.dp(8);
+        body.addView(gallery, galleryParams);
+        Dialog sheet = host.ui.showBottomSheet("Collection photo", body);
+        camera.setOnClickListener(v -> {
+            sheet.dismiss();
+            launchCollectionCamera(order);
+        });
+        gallery.setOnClickListener(v -> {
+            sheet.dismiss();
+            launchCollectionGallery(order);
+        });
+    }
+
+    private void launchCollectionCamera(MainActivity.TransactionRecord order) {
+        try {
+            File folder = new File(host.getCacheDir(), "collection");
+            if (!folder.exists() && !folder.mkdirs()) throw new java.io.IOException("No photo cache");
+            File photo = File.createTempFile("proof_" + order.id + "_", ".jpg", folder);
+            pendingCollectionPhoto = FileProvider.getUriForFile(host,
+                    host.getPackageName() + ".fileprovider", photo);
+            host.pendingCollectionOrderId = order.id;
+            Intent capture = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+            capture.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, pendingCollectionPhoto);
+            capture.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            host.startActivityForResult(capture, MainActivity.COLLECTION_CAMERA_REQUEST);
+        } catch (Exception e) {
+            pendingCollectionPhoto = null;
+            host.ui.showSimpleMessage("Camera unavailable", "Open the gallery instead, or check camera permission in Settings.");
+        }
+    }
+
+    private void launchCollectionGallery(MainActivity.TransactionRecord order) {
+        host.pendingCollectionOrderId = order.id;
+        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("image/*");
+        pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            host.startActivityForResult(pick, MainActivity.COLLECTION_GALLERY_REQUEST);
+        } catch (android.content.ActivityNotFoundException e) {
+            host.ui.showSimpleMessage("Gallery unavailable", "No photo picker is available on this device.");
+        }
+    }
+
+    public void collectionPhotoCancelled() {
+        pendingCollectionPhoto = null;
+        Toast.makeText(host, "No collection photo was added.", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Upload the buyer's photo and wait for seller verification. */
+    public void receiveCollectionPhoto(String orderId, Uri uri) {
+        MainActivity.TransactionRecord order = orderById(orderId);
+        if (order == null || !order.isBuyer(host.currentStudentEmail)
+                || !order.status.equals(MainActivity.TransactionRecord.HELD) || uri == null) {
+            collectionPhotoCancelled();
+            return;
+        }
+        Toast.makeText(host, "Uploading collection photo...", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String url = CloudSync.uploadPhoto(host, uri);
+            host.runOnUiThread(() -> {
+                if (host.isDestroyed() || host.isFinishing()) return;
+                if (url == null || url.isEmpty()) {
+                    host.ui.showSimpleMessage("Photo not uploaded",
+                            "Check your connection and try again. The order cannot complete without a collection photo.");
+                    return;
+                }
+                if (!order.submitCollectionProof(host.currentStudentEmail, url, System.currentTimeMillis())) {
+                    host.ui.showSimpleMessage("Could not attach photo", "This order is no longer awaiting a collection photo.");
+                    return;
+                }
+                saveTransactions();
+                cloudUpdateOrder(order);
+                String title = "Collection photo submitted";
+                String body = order.itemTitle + " · waiting for the seller to verify. The order is still reserved.";
+                host.notification.showCampusNotification(title, body, "payment", "", order.id);
+                host.notification.addNotification(order.sellerEmail, "Collection photo received",
+                        order.itemTitle + " · review the buyer's photo and verify the handover.", "payment", "", order.id);
+                host.notification.sendPush(order.sellerEmail, "Collection photo received",
+                        order.itemTitle + " · review the photo and verify the handover.", "payment", "", order.id);
+                host.showAppScreen("Payments");
+                showOrderDetails(order);
+            });
+        }).start();
+    }
+
+    /** Buyer sees the proof state; seller gets the verification gate. */
+    private void showCollectionProof(MainActivity.TransactionRecord order) {
+        if (!order.isBuyer(host.currentStudentEmail) && !order.isSeller(host.currentStudentEmail)) return;
+        LinearLayout body = new LinearLayout(host);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, host.ui.dp(4), 0, 0);
+        if (order.hasCollectionProof()) {
+            ImageView image = new ImageView(host);
+            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            com.bumptech.glide.Glide.with(host).load(order.collectionPhotoUrl).into(image);
+            body.addView(image, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(240)));
+            body.addView(host.ui.bodyText("Photographed by " + host.studentName(order.collectionPhotoBy)
+                    + " · " + host.messageTime(order.collectionPhotoTime), host.muted, 11));
+        } else {
+            body.addView(host.ui.bodyText("No collection photo yet.", host.muted, 12));
+        }
+        Dialog sheet = host.ui.showBottomSheet("Collection verification", body);
+        if (order.isSeller(host.currentStudentEmail) && order.collectionProofPending()) {
+            Button verify = host.ui.primaryButton("Verify & complete order");
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
+            params.topMargin = host.ui.dp(10);
+            body.addView(verify, params);
+            verify.setOnClickListener(v -> {
+                sheet.dismiss();
+                confirmSellerVerification(order);
+            });
+        }
+    }
+
+    /** Completion is seller-only and requires the buyer's photo. */
+    private void confirmSellerVerification(MainActivity.TransactionRecord order) {
+        if (!order.isSeller(host.currentStudentEmail) || !order.collectionProofPending()) return;
         host.ui.dialog()
-                .setTitle("Confirm collection?")
-                .setMessage("Confirm you've got the item? This marks the order as complete and asks for a review.")
+                .setTitle("Verify collection?")
+                .setMessage("Only verify after you have reviewed the buyer's photo and the handover is real. This marks the item sold, completes the order and generates an invoice. It cannot be undone from this screen.")
                 .setNegativeButton("Not yet", null)
-                .setPositiveButton("Confirm", (confirmation, action) -> {
-                    if (!order.completeByBuyer(host.currentStudentEmail)) return;
+                .setPositiveButton("Verify & complete", (confirmation, action) -> {
+                    String invoice = order.invoiceNumber == null || order.invoiceNumber.isEmpty()
+                            ? InvoiceMailer.newNumber(order) : order.invoiceNumber;
+                    if (!order.verifyCollectionBySeller(host.currentStudentEmail,
+                            System.currentTimeMillis(), invoice)) return;
                     if (!saveTransactions()) {
                         order.status = MainActivity.TransactionRecord.HELD;
                         Toast.makeText(host, "The order didn't save. Give it another go.", Toast.LENGTH_LONG).show();
@@ -2079,17 +2758,35 @@ public class Order {
                     }
                     for (MainActivity.Product product : host.products) if (product.id.equals(order.productId)) {
                         product.status = order.listingState();
+                        product.updatedTime = order.sellerVerifiedTime > 0 ? order.sellerVerifiedTime : System.currentTimeMillis();
                         host.market.cloudMirrorListing(product, false);
                     }
                     host.market.saveProducts();
                     cloudUpdateOrder(order);
-                    host.notification.addNotification(order.sellerEmail, "Order completed", order.itemTitle, "payment", "");
-                    host.notification.sendPush(order.sellerEmail, "Order completed", order.itemTitle, "payment", "");
-                    host.notification.showCampusNotification("Collection confirmed / review required", "The order is complete. Please rate your purchase.", "payment");
-                    page.dismiss();
-                    host.showAppScreen("Payments");
-                    reviewOrder(order);
+                    refreshOrderTab();
+                    host.notification.addNotification(order.buyerEmail, "Collection verified",
+                            order.itemTitle + " · the seller verified your collection photo. Invoice " + order.invoiceNumber + " is ready.",
+                            "payment", "", order.id);
+                    host.notification.sendPush(order.buyerEmail, "Collection verified",
+                            order.itemTitle + " · invoice " + order.invoiceNumber + " is ready.", "payment", "", order.id);
+                    host.notification.showCampusNotification("Order completed",
+                            "You verified collection. Invoice " + order.invoiceNumber + " is ready to email.",
+                            "payment", "", order.id);
+                    showReceipt(order);
+                    InvoiceMailer.finalise(host, order);
                 }).show();
+    }
+
+    private String deliveryLocationLabel(long at) {
+        return at <= 0 ? "Not shared yet" : "Updated " + host.messageTime(at);
+    }
+
+    private String pickupRevisionLabel(CampusFeatures.Pickup pickup) {
+        int revision = pickup == null || pickup.revision <= 0 ? 1 : pickup.revision;
+        String by = pickup == null || pickup.updatedBy == null || pickup.updatedBy.isEmpty()
+                ? "" : " by " + host.studentName(pickup.updatedBy);
+        return "Arrangement v" + revision + by + (pickup == null || pickup.updatedAt <= 0
+                ? "" : " · " + host.messageTime(pickup.updatedAt));
     }
 
     private void orderActionsSheet(MainActivity.TransactionRecord order, Dialog page) {
@@ -2108,10 +2805,17 @@ public class Order {
             host.inbox.showConversation(buyer ? order.sellerEmail : order.buyerEmail);
         });
         if (order.status.equals(MainActivity.TransactionRecord.HELD) && !order.cancellationPending()) {
-            addOrderAction(body, "calendar", "Campus pickup", "Confirm or change the handover plan", v -> {
-                if (sheetRef[0] != null) sheetRef[0].dismiss();
-                host.market.pickupActions(order);
-            });
+            if (order.deliveryOrder()) {
+                addOrderAction(body, "pin", "Delivery map", "Live buyer and seller locations", v -> {
+                    if (sheetRef[0] != null) sheetRef[0].dismiss();
+                    DeliveryMap.showOrder(host, order);
+                });
+            } else {
+                addOrderAction(body, "calendar", "Campus pickup", "Confirm or change the handover plan", v -> {
+                    if (sheetRef[0] != null) sheetRef[0].dismiss();
+                    host.market.pickupActions(order);
+                });
+            }
             addOrderAction(body, "flag", "Cancellation", "Ask to cancel this order", v -> {
                 if (sheetRef[0] != null) sheetRef[0].dismiss();
                 showCancellationCenter(order);
@@ -2246,11 +2950,11 @@ public class Order {
         cloudUpdateOrder(order);
         for (MainActivity.TransactionRecord other : superseded) cloudUpdateOrder(other);
         host.notification.addNotification(order.buyerEmail, "Purchase confirmed",
-                order.itemTitle + " is confirmed. Arrange collection.", "payment", "");
+                order.itemTitle + " is confirmed. Arrange collection.", "payment", "", order.id);
         host.notification.sendPush(order.buyerEmail, "Purchase confirmed",
-                order.itemTitle + " is confirmed. Arrange collection.");
+                order.itemTitle + " is confirmed. Arrange collection.", "payment", "", order.id);
         host.notification.showCampusNotification("Purchase confirmed",
-                order.itemTitle + ". Arrange collection with the buyer.", "payment");
+                order.itemTitle + ". Arrange collection with the buyer.", "payment", "", order.id);
         host.showAppScreen("Payments");
     }
 
@@ -2271,11 +2975,11 @@ public class Order {
                     syncListingFor(order);
                     cloudUpdateOrder(order);
                     host.notification.addNotification(order.buyerEmail, "Purchase declined",
-                            order.itemTitle + " was declined by the seller.", "payment", "");
+                            order.itemTitle + " was declined by the seller.", "payment", "", order.id);
                     host.notification.sendPush(order.buyerEmail, "Purchase declined",
-                            order.itemTitle + " was declined by the seller.");
+                            order.itemTitle + " was declined by the seller.", "payment", "", order.id);
                     host.notification.showCampusNotification("Purchase declined",
-                            order.itemTitle + ". The buyer has been notified.", "payment");
+                            order.itemTitle + ". The buyer has been notified.", "payment", "", order.id);
                     host.showAppScreen("Payments");
                 }).show();
     }
@@ -2297,13 +3001,35 @@ public class Order {
                     syncListingFor(order);
                     cloudUpdateOrder(order);
                     host.notification.addNotification(order.sellerEmail, "Request withdrawn",
-                            order.itemTitle + " was withdrawn by the buyer.", "payment", "");
+                            order.itemTitle + " was withdrawn by the buyer.", "payment", "", order.id);
+                    host.notification.sendPush(order.sellerEmail, "Request withdrawn",
+                            order.itemTitle + " was withdrawn by the buyer.", "payment", "", order.id);
                     host.notification.showCampusNotification("Request cancelled",
-                            order.itemTitle + ". The seller has been notified.", "payment");
+                            order.itemTitle + ". The seller has been notified.", "payment", "", order.id);
                     host.showAppScreen("Payments");
                 }).show();
     }
 
+    // Cancel purchase requests that have been ignored for a week so listings
+    // do not stay reserved forever.
+    public void expireStaleRequests() {
+        long cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000;
+        boolean changed = false;
+        for (MainActivity.TransactionRecord order : host.transactions) {
+            if (!order.status.equals(MainActivity.TransactionRecord.REQUESTED) || order.createdMillis() >= cutoff) continue;
+            order.status = MainActivity.TransactionRecord.CANCELLED;
+            order.cancellationOutcome = "Expired";
+            order.cancellationTime = System.currentTimeMillis();
+            changed = true;
+            syncListingFor(order);
+            cloudUpdateOrder(order);
+            host.notification.addNotification(order.buyerEmail, "Request expired",
+                    order.itemTitle + " was cancelled because it was not approved.", "payment", "", order.id);
+            host.notification.addNotification(order.sellerEmail, "Request expired",
+                    order.itemTitle + " request expired and the listing is available again.", "payment", "", order.id);
+        }
+        if (changed) saveTransactions();
+    }
     // Orders are saved as JSON; skip a bad record.
     public void loadTransactions() {
         String saved = host.getSharedPreferences(host.PREFS + "_orders", Context.MODE_PRIVATE).getString("records", "[]");
@@ -2330,6 +3056,21 @@ public class Order {
                     order.payoutRequestedAt = record.optLong("payoutRequestedAt", 0);
                     order.payoutMethod = record.optString("payoutMethod", "Bank transfer");
                     order.payoutSchedule = record.optString("payoutSchedule", "On request");
+                    order.deliveryMethod = record.optString("deliveryMethod", "Campus pickup");
+                    order.deliveryAddress = record.optString("deliveryAddress", "");
+                    order.buyerLat = record.optDouble("buyerLat", 0);
+                    order.buyerLng = record.optDouble("buyerLng", 0);
+                    order.sellerLat = record.optDouble("sellerLat", 0);
+                    order.sellerLng = record.optDouble("sellerLng", 0);
+                    order.buyerLocationAt = record.optLong("buyerLocationAt", 0);
+                    order.sellerLocationAt = record.optLong("sellerLocationAt", 0);
+                    order.collectionPhotoUrl = record.optString("collectionPhotoUrl", "");
+                    order.collectionPhotoBy = record.optString("collectionPhotoBy", "");
+                    order.collectionPhotoTime = record.optLong("collectionPhotoTime", 0);
+                    order.sellerVerifiedBy = record.optString("sellerVerifiedBy", "");
+                    order.sellerVerifiedTime = record.optLong("sellerVerifiedTime", 0);
+                    order.invoiceNumber = record.optString("invoiceNumber", "");
+                    order.invoiceFinalizedAt = record.optLong("invoiceFinalizedAt", 0);
                     host.transactions.add(order);
                 } catch (org.json.JSONException | IllegalArgumentException | ArithmeticException e) {
                     skipped = true;
@@ -2342,6 +3083,7 @@ public class Order {
             Toast.makeText(host, "Saved orders didn't load.", Toast.LENGTH_LONG).show();
         }
         retryPendingOrderPushes();
+        expireStaleRequests();
     }
 
     // Wait a few seconds for the first sync, then retry.
@@ -2383,24 +3125,39 @@ public class Order {
                     .put("returnOutcome", order.returnOutcome).put("returnTime", order.returnTime)
                     .put("payoutRequestedAt", order.payoutRequestedAt)
                     .put("payoutMethod", order.payoutMethod).put("payoutSchedule", order.payoutSchedule)
+                    .put("deliveryMethod", order.deliveryMethod).put("deliveryAddress", order.deliveryAddress)
+                    .put("buyerLat", order.buyerLat).put("buyerLng", order.buyerLng)
+                    .put("sellerLat", order.sellerLat).put("sellerLng", order.sellerLng)
+                    .put("buyerLocationAt", order.buyerLocationAt).put("sellerLocationAt", order.sellerLocationAt)
+                    .put("collectionPhotoUrl", order.collectionPhotoUrl)
+                    .put("collectionPhotoBy", order.collectionPhotoBy).put("collectionPhotoTime", order.collectionPhotoTime)
+                    .put("sellerVerifiedBy", order.sellerVerifiedBy).put("sellerVerifiedTime", order.sellerVerifiedTime)
+                    .put("invoiceNumber", order.invoiceNumber).put("invoiceFinalizedAt", order.invoiceFinalizedAt)
                     .put("createdTime", order.createdMillis()));
         } catch (org.json.JSONException e) { return false; }
         return host.getSharedPreferences(host.PREFS + "_orders", Context.MODE_PRIVATE).edit().putString("records", records.toString()).commit();
     }
 
     public void showCheckoutConfirm(MainActivity.Product product, String quotedPrice, String method, String bank,
-                                     String buyer, String phone, String reference, Runnable confirmed) {
+                                     String buyer, String phone, String reference, String fulfilment,
+                                     String deliveryAddress, Runnable confirmed) {
         LinearLayout form = new LinearLayout(host);
         form.setOrientation(LinearLayout.VERTICAL);
         form.setPadding(0, host.ui.dp(4), 0, 0);
-        form.addView(host.ui.bodyText("Review your order request before sending it. The seller must confirm before you arrange collection.",
+        form.addView(host.ui.bodyText("Review your order request before sending it. The seller must confirm before you arrange handover.",
                 host.muted, 12));
         form.addView(host.ui.titleText(product.title + " · R" + quotedPrice, host.text, 16));
         paymentLine(form, "Payment preference", bank.isEmpty() ? method : method + " (" + bank + ")");
         paymentLine(form, "Buyer", buyer);
         paymentLine(form, "Phone", phone);
-        paymentLine(form, "Pickup", product.location + " / " + product.delivery);
+        paymentLine(form, "Fulfilment", fulfilment.equals("Local delivery") ? "Delivery" : fulfilment);
+        if (fulfilment.equals("Local delivery")) {
+            paymentLine(form, "Delivery address", deliveryAddress);
+        } else {
+            paymentLine(form, "Pickup", product.location + " / " + product.delivery);
+        }
         if (!reference.trim().isEmpty()) paymentLine(form, "Collection note", reference);
+        form.addView(host.ui.bodyText("Safety: never pay before meeting, inspect the item first, and keep payment to the agreed cash or EFT arrangement. CampusTrade does not process payments.", host.muted, 11));
         paymentLine(form, "Total (ZAR)", "R" + quotedPrice);
         Button send = host.ui.primaryButton("Send request");
         LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(

@@ -191,7 +191,10 @@ public final class CloudSync {
     }
 
     public static String remoteId(Context ctx, String localId) {
-        return idmap(ctx).getString("l:" + localId, "");
+        String mapped = idmap(ctx).getString("l:" + localId, "");
+        if (!mapped.isEmpty()) return mapped;
+        // Listings loaded directly from Firestore use "remote-<docId>".
+        return localId != null && localId.startsWith("remote-") ? localId.substring(7) : "";
     }
 
     public static String localId(Context ctx, String docId) {

@@ -60,6 +60,12 @@ public class Market {
     private Button marketLoadMore;
     private boolean offersPulling = false;
     private long lastOffersPullAt = 0;
+    private com.google.firebase.firestore.ListenerRegistration listingsListener;
+    private com.google.firebase.firestore.ListenerRegistration deletedListingsListener;
+    private com.google.firebase.firestore.ListenerRegistration offersBuyerListener;
+    private com.google.firebase.firestore.ListenerRegistration offersSellerListener;
+    private Dialog currentOfferPage;
+    private String currentOfferId = "";
 
     public Market(MainActivity host) {
         this.host = host;
@@ -142,12 +148,17 @@ public class Market {
         LinearLayout safety = host.ui.horizontal();
         safety.setGravity(Gravity.CENTER_VERTICAL);
         safety.setPadding(host.ui.dp(12), host.ui.dp(12), host.ui.dp(12), host.ui.dp(12));
-        safety.setBackground(host.ui.round(host.nightActive ? Color.rgb(55, 47, 28) : Color.rgb(255, 244, 218), 12));
+        safety.setBackground(host.ui.strokedRound(host.nightActive ? Color.rgb(55, 47, 28) : Color.rgb(255, 244, 218), 12,
+                host.nightActive ? Color.rgb(217, 139, 0) : Color.rgb(217, 139, 0)));
         safety.addView(host.new CampusAssetView(host, "shield", host.readableInk(Color.rgb(217, 139, 0))), new LinearLayout.LayoutParams(host.ui.dp(22), host.ui.dp(22)));
         TextView safetyText = host.ui.bodyText("Meet in a public campus pickup point and inspect before paying.",
                 host.nightActive ? Color.rgb(255, 226, 168) : Color.rgb(92, 74, 30), 11);
         safetyText.setPadding(host.ui.dp(10), 0, 0, 0);
         safety.addView(safetyText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView openSafety = host.ui.linkText("Safety center");
+        openSafety.setPadding(host.ui.dp(10), 0, 0, 0);
+        openSafety.setOnClickListener(v -> SafetyCenter.show(host));
+        safety.addView(openSafety);
         LinearLayout.LayoutParams safetyParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         safetyParams.topMargin = host.ui.dp(14);
         content.addView(safety, safetyParams);
@@ -357,7 +368,7 @@ public class Market {
             if (filter.equals("Available") && !product.status.equals("Available")) continue;
             if (filter.equals("Saved") && !product.savedBy.contains(host.currentStudentEmail)) continue;
             String searchable = product.title + " " + product.category + " " + product.description
-                    + " " + product.documentName;
+                    + " " + product.documentName + " " + product.delivery + " " + product.specs;
             if (!searchable.toLowerCase(Locale.ROOT).contains(host.marketQuery.trim().toLowerCase(Locale.ROOT))) continue;
             count++;
         }
@@ -365,7 +376,59 @@ public class Market {
     }
 
     public void showAddProductDialog() {
-        showProductEditor(null);
+        if (!host.settingsPrefs().getBoolean("listing_terms_acknowledged", false)) {
+            showListingTermsDialog();
+        } else {
+            showProductEditor(null);
+        }
+    }
+
+    // T&Cs and publishing risks are shown before the listing editor opens. The
+    // student can choose not to see this reminder again; the review step still
+    // requires its own acknowledgement before publication.
+    private void showListingTermsDialog() {
+        LinearLayout body = new LinearLayout(host);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, host.ui.dp(4), 0, 0);
+        body.addView(host.ui.bodyText("Read these terms before you list anything. CampusTrade only connects students; you are responsible for the accuracy of the listing, meeting safely and settling cash or EFT directly.",
+                host.muted, 12));
+        body.addView(host.ui.bodyText("CampusTrade does not process payment or refunds and is not liable for theft, fraud, loss, injury, non-delivery or losses outside the app, except where the law does not allow that liability to be excluded.",
+                host.muted, 11));
+        TextView fullTerms = host.ui.linkText("Read the full Terms & Conditions");
+        fullTerms.setPadding(0, host.ui.dp(8), 0, host.ui.dp(8));
+        fullTerms.setOnClickListener(v -> Terms.show(host));
+        body.addView(fullTerms);
+        CheckBox acknowledge = new CheckBox(host);
+        acknowledge.setText("I have read the Terms & Conditions and understand the publishing risks");
+        acknowledge.setTextSize(12);
+        host.ui.themedToggle(acknowledge);
+        body.addView(acknowledge);
+        CheckBox dontRemind = new CheckBox(host);
+        dontRemind.setText("Don't remind me again");
+        dontRemind.setTextSize(12);
+        host.ui.themedToggle(dontRemind);
+        body.addView(dontRemind);
+        Button continueButton = host.ui.primaryButton("Create listing");
+        continueButton.setEnabled(false);
+        LinearLayout.LayoutParams continueParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
+        continueParams.topMargin = host.ui.dp(12);
+        body.addView(continueButton, continueParams);
+        Button cancel = host.ui.secondaryButton("Cancel");
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(44));
+        cancelParams.topMargin = host.ui.dp(6);
+        body.addView(cancel, cancelParams);
+        Dialog sheet = host.ui.showBottomSheet("Listing terms", body);
+        acknowledge.setOnCheckedChangeListener((button, checked) -> continueButton.setEnabled(checked));
+        continueButton.setOnClickListener(v -> {
+            if (dontRemind.isChecked()) {
+                host.settingsPrefs().edit().putBoolean("listing_terms_acknowledged", true).apply();
+            }
+            sheet.dismiss();
+            showProductEditor(null);
+        });
+        cancel.setOnClickListener(v -> sheet.dismiss());
     }
 
     // One editor for new and existing listings; drafts stay here.
@@ -478,6 +541,9 @@ public class Market {
         TextView categoryLabel = host.ui.label("Category");
         categoryLabel.setPadding(0, host.ui.dp(12), 0, host.ui.dp(8));
         stepDetails.addView(categoryLabel);
+        final LinearLayout specsBox = new LinearLayout(host);
+        specsBox.setOrientation(LinearLayout.VERTICAL);
+        specsBox.setVisibility(View.GONE);
         final TextView categoryError = host.ui.bodyText("Choose a category before continuing.", host.nightActive
                 ? Color.rgb(255, 125, 146) : Color.rgb(190, 18, 60), 11);
         categoryError.setVisibility(View.GONE);
@@ -496,6 +562,7 @@ public class Market {
                 selectedCategory[0] = value;
                 refreshCategoryChips(categoryChips, categoryValues, selectedCategory[0]);
                 categoryError.setVisibility(View.GONE);
+                specsBox.setVisibility(value.equals("Technology") ? View.VISIBLE : View.GONE);
             });
             LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, host.ui.dp(40));
             if (i > 0) chipParams.leftMargin = host.ui.dp(8);
@@ -530,6 +597,21 @@ public class Market {
             @Override public void afterTextChanged(Editable s) { counter.setText(s.length() + " / 1000"); }
         });
 
+        // Technology listings show a dedicated specs field.
+        specsBox.setVisibility(existing != null && existing.category.equals("Technology") ? View.VISIBLE : View.GONE);
+        specsBox.addView(host.ui.bodyText("Give buyers the full device specifications: model, processor, RAM, storage, screen, battery, ports and any faults.",
+                host.muted, 11));
+        EditText specsInput = host.ui.listingField(specsBox, "Tech specs", "e.g. 16 GB RAM, 512 GB SSD, Intel i7, 14-inch",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        specsInput.setSingleLine(false);
+        specsInput.setMinLines(3);
+        specsInput.setGravity(Gravity.TOP | Gravity.START);
+        specsInput.setPadding(host.ui.dp(14), host.ui.dp(12), host.ui.dp(14), host.ui.dp(12));
+        specsInput.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(110)));
+        specsInput.setFilters(new InputFilter[] {new InputFilter.LengthFilter(2000)});
+        if (existing != null) specsInput.setText(existing.specs);
+        stepDetails.addView(specsBox);
+
         // Step 2: price and collection.
         listingSection(stepPrice, "Price & collection");
         EditText priceInput = host.ui.listingField(stepPrice, "Price (ZAR)", "0.00",
@@ -542,7 +624,7 @@ public class Market {
         stepPrice.addView(negotiableInput);
         EditText locationInput = host.ui.listingField(stepPrice, "Pickup location", "Campus or public meeting point", InputType.TYPE_CLASS_TEXT);
         Spinner deliveryInput = host.ui.listingSelector(stepPrice, "Delivery", new String[] {
-                "Campus pickup", "Local delivery", "Pickup or delivery" });
+                "Campus pickup", "Delivery" });
         TextView safetyNote = host.ui.bodyText("Choose a busy campus spot for handovers and inspect the item before paying.",
                 host.muted, 11);
         safetyNote.setPadding(0, host.ui.dp(14), 0, 0);
@@ -552,8 +634,27 @@ public class Market {
             titleInput.setText(existing.title); priceInput.setText(existing.price); locationInput.setText(existing.location);
             descriptionInput.setText(existing.description);
             negotiableInput.setChecked(existing.negotiable);
-            host.ui.selectSpinner(conditionInput, existing.condition); host.ui.selectSpinner(deliveryInput, existing.delivery);
+            host.ui.selectSpinner(conditionInput, existing.condition); host.ui.selectSpinner(deliveryInput,
+                    existing.delivery != null && existing.delivery.toLowerCase(Locale.ROOT).contains("delivery")
+                            ? "Delivery" : "Campus pickup");
         }
+        final boolean[] pickupChosen = {deliveryInput.getSelectedItemPosition() == 0};
+        final Runnable updatePickupField = () -> {
+            pickupChosen[0] = deliveryInput.getSelectedItemPosition() == 0;
+            locationInput.setEnabled(pickupChosen[0]);
+            locationInput.setFocusable(pickupChosen[0]);
+            locationInput.setAlpha(pickupChosen[0] ? 1f : 0.35f);
+            locationInput.setHint(pickupChosen[0] ? "Campus or public meeting point" : "Not needed for delivery");
+            if (!pickupChosen[0]) locationInput.setError(null);
+        };
+        deliveryInput.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent, android.view.View view,
+                                                 int position, long id) {
+                updatePickupField.run();
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
+        });
+        updatePickupField.run();
 
         // Step 3: final check before publishing.
         listingSection(stepReview, "Check your listing");
@@ -566,6 +667,32 @@ public class Market {
                 host.muted, 11);
         reviewNote.setPadding(0, host.ui.dp(12), 0, 0);
         stepReview.addView(reviewNote);
+
+        // Publishing requires a fresh acknowledgement of the marketplace
+        // risks and the Terms & Conditions, not just the login checkbox.
+        LinearLayout riskCard = new LinearLayout(host);
+        riskCard.setOrientation(LinearLayout.VERTICAL);
+        riskCard.setPadding(host.ui.dp(14), host.ui.dp(12), host.ui.dp(14), host.ui.dp(12));
+        int riskBackground = host.nightActive ? Color.rgb(54, 45, 30) : Color.rgb(255, 247, 229);
+        int riskBorder = host.nightActive ? Color.rgb(105, 83, 44) : Color.rgb(236, 211, 160);
+        riskCard.setBackground(host.ui.strokedRound(riskBackground, 12, riskBorder));
+        LinearLayout.LayoutParams riskParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        riskParams.topMargin = host.ui.dp(14);
+        stepReview.addView(riskCard, riskParams);
+        riskCard.addView(host.ui.titleText("Publishing risks", host.text, 14));
+        riskCard.addView(host.ui.bodyText("CampusTrade only connects students. You are responsible for the accuracy of this listing, meeting safely and settling cash or EFT directly. "
+                + "CampusTrade does not process payment or refunds and is not liable for theft, fraud, loss, injury, non-delivery or losses outside the app, "
+                + "except where the law does not allow that liability to be excluded.", host.muted, 11));
+        TextView fullTerms = host.ui.linkText("Read the full Terms & Conditions");
+        fullTerms.setPadding(0, host.ui.dp(8), 0, host.ui.dp(4));
+        fullTerms.setOnClickListener(v -> Terms.show(host));
+        riskCard.addView(fullTerms);
+        CheckBox publishTerms = new CheckBox(host);
+        publishTerms.setText("I have read the Terms & Conditions and understand these publishing risks");
+        publishTerms.setTextSize(12);
+        host.ui.themedToggle(publishTerms);
+        riskCard.addView(publishTerms);
 
         LinearLayout footer = new LinearLayout(host);
         footer.setOrientation(LinearLayout.VERTICAL);
@@ -595,7 +722,11 @@ public class Market {
             reviewLine(reviewBox, "Category", selectedCategory[0]);
             reviewLine(reviewBox, "Condition", conditionInput.getSelectedItemPosition() == 0
                     ? "Not set" : conditionInput.getSelectedItem().toString());
-            reviewLine(reviewBox, "Pickup", host.ui.text(locationInput).trim());
+            if (selectedCategory[0].equals("Technology") && !host.ui.text(specsInput).trim().isEmpty()) {
+                reviewLine(reviewBox, "Tech specs", host.ui.text(specsInput).trim());
+            }
+            reviewLine(reviewBox, "Pickup", pickupChosen[0]
+                    ? host.ui.text(locationInput).trim() : "Not used for delivery");
             reviewLine(reviewBox, "Delivery", deliveryInput.getSelectedItem().toString());
             reviewLine(reviewBox, "Photos", host.draftPhotos.size() + " added");
             if (host.draftDocumentName != null && !host.draftDocumentName.isEmpty()) {
@@ -610,12 +741,14 @@ public class Market {
                     && conditionInput.getSelectedItemPosition() > 0
                     && host.ui.text(descriptionInput).trim().length() >= 10
                     && price.matches(Constants.PRICE_PATTERN)
-                    && !host.ui.text(locationInput).trim().isEmpty();
+                    && (!pickupChosen[0] || !host.ui.text(locationInput).trim().isEmpty())
+                    && publishTerms.isChecked();
             continueButton.setEnabled(valid);
             continueButton.setBackground(host.ui.round(valid ? host.primary
                     : host.nightActive ? Color.rgb(58, 58, 63) : Color.rgb(222, 220, 214), 4));
             continueButton.setTextColor(valid ? Color.WHITE : host.muted);
         };
+        publishTerms.setOnCheckedChangeListener((button, checked) -> refreshGate.run());
         final Runnable renderStep = () -> {
             stepDetails.setVisibility(step[0] == 0 ? View.VISIBLE : View.GONE);
             stepPrice.setVisibility(step[0] == 1 ? View.VISIBLE : View.GONE);
@@ -639,6 +772,12 @@ public class Market {
             String price = host.ui.text(priceInput).trim();
             String location = host.ui.text(locationInput).trim();
             String description = host.ui.text(descriptionInput).trim();
+            if (!savingDraft[0] && !publishTerms.isChecked()) {
+                step[0] = 2; renderStep.run();
+                host.ui.showSimpleMessage("Terms & Conditions",
+                        "Tick the acknowledgement before publishing this listing.");
+                return;
+            }
             if (title.length() < 3) {
                 step[0] = 0; renderStep.run();
                 titleInput.setError("Add a clear product title");
@@ -662,7 +801,7 @@ public class Market {
                 priceInput.requestFocus();
                 return;
             }
-            if (!savingDraft[0] && location.isEmpty()) {
+            if (!savingDraft[0] && pickupChosen[0] && location.isEmpty()) {
                 step[0] = 1; renderStep.run();
                 locationInput.setError("Add a safe pickup location");
                 locationInput.requestFocus();
@@ -674,16 +813,26 @@ public class Market {
                 descriptionInput.requestFocus();
                 return;
             }
+            if (!savingDraft[0] && host.draftPhotos.isEmpty()) {
+                step[0] = 0; renderStep.run();
+                host.ui.showSimpleMessage("Photo required",
+                        "Add at least one product photo before publishing this listing.");
+                return;
+            }
+            if (!savingDraft[0] && !host.requireProfilePhoto()) {
+                return;
+            }
             String category = selectedCategory[0].isEmpty() ? "Other" : selectedCategory[0];
             String condition = conditionInput.getSelectedItemPosition() == 0 ? "Good"
                     : conditionInput.getSelectedItem().toString();
             String delivery = deliveryInput.getSelectedItem().toString();
-            if (location.isEmpty()) location = "Campus pickup";
+            if (location.isEmpty()) location = pickupChosen[0] ? "Campus pickup" : "Delivery";
             String createdAt = new SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(new Date());
             MainActivity.Product product = new MainActivity.Product(title, new BigDecimal(price).setScale(2).toPlainString(),
                     description, host.currentStudentEmail, category, condition, location, delivery, createdAt,
                     savingDraft[0] ? "Draft" : "Available", existing == null ? java.util.UUID.randomUUID().toString() : existing.id);
             product.sellerName = host.currentStudentName;
+            product.specs = selectedCategory[0].equals("Technology") ? host.ui.text(specsInput).trim() : "";
             product.photos.addAll(host.draftPhotos);
             product.documentUri = host.draftDocumentUri;
             product.documentUrl = host.draftDocumentUrl;
@@ -747,7 +896,7 @@ public class Market {
                 if (!host.ui.text(priceInput).trim().matches(Constants.PRICE_PATTERN)) {
                     priceInput.setError("Enter a price with up to 2 decimal places; R0 means free"); valid = false;
                 }
-                if (host.ui.text(locationInput).trim().isEmpty()) {
+                if (pickupChosen[0] && host.ui.text(locationInput).trim().isEmpty()) {
                     locationInput.setError("Add a safe pickup location"); valid = false;
                 }
                 if (!valid) return;
@@ -929,12 +1078,14 @@ public class Market {
         form.addView(negotiableInput);
         EditText locationInput = host.ui.listingField(form, "Pickup location", "Campus or public meeting point", InputType.TYPE_CLASS_TEXT);
         Spinner deliveryInput = host.ui.listingSelector(form, "Delivery", new String[] {
-                "Campus pickup", "Local delivery", "Pickup or delivery" });
+                "Campus pickup", "Delivery" });
         if (existing != null) {
             titleInput.setText(existing.title); priceInput.setText(existing.price); locationInput.setText(existing.location);
             descriptionInput.setText(existing.description);
             negotiableInput.setChecked(existing.negotiable);
-            host.ui.selectSpinner(categoryInput, existing.category); host.ui.selectSpinner(conditionInput, existing.condition); host.ui.selectSpinner(deliveryInput, existing.delivery);
+            host.ui.selectSpinner(categoryInput, existing.category); host.ui.selectSpinner(conditionInput, existing.condition); host.ui.selectSpinner(deliveryInput,
+                    existing.delivery != null && existing.delivery.toLowerCase(Locale.ROOT).contains("delivery")
+                            ? "Delivery" : "Campus pickup");
         }
 
         LinearLayout footer = new LinearLayout(host);
@@ -1063,8 +1214,15 @@ public class Market {
     }
 
     // A listing is public when it is not hidden, draft, paused or expired.
+    // Sold listings stay visible for one day, then leave the marketplace.
     public boolean publicListing(MainActivity.Product p) {
-        return !p.hidden && !p.status.equals("Draft") && !p.status.equals("Paused") && !expired(p);
+        if (p.hidden || p.status.equals("Draft") || p.status.equals("Paused")) return false;
+        if (p.status.equals("Sold")) {
+            long soldAt = p.updatedTime > 0 ? p.updatedTime : p.createdTime;
+            if (soldAt > 0 && System.currentTimeMillis() - soldAt > 24L * 60 * 60 * 1000) return false;
+            return true;
+        }
+        return !expired(p);
     }
 
     /** Listings last 60 days; renew puts them back on the market. */
@@ -1253,7 +1411,10 @@ public class Market {
                 final CampusFeatures.Offer[] created = {null};
                 host.featureStore.update(f -> created[0] = f.offer(p.id, host.currentStudentEmail, p.sellerEmail, value, System.currentTimeMillis()));
                 if (created[0] != null) cloudSaveOffer(created[0], p);
-                host.inbox.localMessage(p.sellerEmail, "Offer for " + p.title + ": R" + CampusFeatures.money(value, false));
+                host.notification.addNotification(p.sellerEmail, "New offer",
+                        p.title + ": R" + CampusFeatures.money(value, false), "marketplace", "");
+                host.notification.sendPush(p.sellerEmail, "New offer",
+                        p.title + ": R" + CampusFeatures.money(value, false), "marketplace", "");
                 sheet.dismiss();
                 host.showAppScreen("Offers");
             } catch (RuntimeException e) {
@@ -1406,6 +1567,48 @@ public class Market {
         }
     }
 
+    private void startOfferListeners(String uid) {
+        if (uid.isEmpty() || offersBuyerListener != null) return;
+        com.google.firebase.firestore.FirebaseFirestore db =
+                com.google.firebase.firestore.FirebaseFirestore.getInstance();
+        offersBuyerListener = db.collection("offers").whereEqualTo("buyerId", uid)
+                .addSnapshotListener((snap, error) -> {
+                    if (error != null) {
+                        android.util.Log.w("CampusTrade", "offer listener (buyer): " + error.getMessage());
+                        return;
+                    }
+                    if (snap == null || host.isDestroyed() || host.isFinishing()) return;
+                    mergeOfferDocs(snap.getDocuments());
+                    refreshOfferSurfaces();
+                });
+        offersSellerListener = db.collection("offers").whereEqualTo("sellerId", uid)
+                .addSnapshotListener((snap, error) -> {
+                    if (error != null) {
+                        android.util.Log.w("CampusTrade", "offer listener (seller): " + error.getMessage());
+                        return;
+                    }
+                    if (snap == null || host.isDestroyed() || host.isFinishing()) return;
+                    mergeOfferDocs(snap.getDocuments());
+                    refreshOfferSurfaces();
+                });
+    }
+
+    private void refreshOfferSurfaces() {
+        if (currentOfferPage != null && currentOfferPage.isShowing() && !currentOfferId.isEmpty()) {
+            CampusFeatures.Offer offer = host.featureStore.data.findOffer(currentOfferId);
+            if (offer == null) {
+                currentOfferPage.dismiss();
+            } else {
+                String id = currentOfferId;
+                currentOfferPage.dismiss();
+                reviewOffer(id);
+            }
+        }
+        if ("Offers".equals(host.currentTab) || "Home".equals(host.currentTab)) {
+            host.showAppScreen(host.currentTab);
+        }
+    }
+
     /** Load offers where this student is buyer or seller. */
     private void cloudPullOffers(Runnable after) {
         String uid = CloudSync.uid(host);
@@ -1418,41 +1621,7 @@ public class Market {
                                     new java.util.LinkedHashMap<>();
                             for (com.google.firebase.firestore.DocumentSnapshot d : buySnap.getDocuments()) docs.put(d.getId(), d);
                             for (com.google.firebase.firestore.DocumentSnapshot d : sellSnap.getDocuments()) docs.put(d.getId(), d);
-                            try {
-                                host.featureStore.update(f -> {
-                                    for (com.google.firebase.firestore.DocumentSnapshot doc : docs.values()) {
-                                        CampusFeatures.Offer target = null;
-                                        for (CampusFeatures.Offer o : f.offers) if (o.id.equals(doc.getId())) { target = o; break; }
-                                        if (target == null) {
-                                            target = new CampusFeatures.Offer();
-                                            target.id = doc.getId();
-                                            f.offers.add(target);
-                                        }
-                                        String remoteListing = doc.getString("listingId");
-                                        String localListing = CloudSync.localId(host, remoteListing == null ? "" : remoteListing);
-                                        target.listing = localListing.isEmpty() ? (remoteListing == null ? "" : remoteListing) : localListing;
-                                        String buyer = doc.getString("buyerEmail");
-                                        if (buyer == null || buyer.isEmpty()) buyer = CloudSync.emailForUid(host, doc.getString("buyerId"));
-                                        String seller = doc.getString("sellerEmail");
-                                        if (seller == null || seller.isEmpty()) seller = CloudSync.emailForUid(host, doc.getString("sellerId"));
-                                        target.buyer = buyer == null ? "" : buyer;
-                                        target.seller = seller == null ? "" : seller;
-                                        Double amount = doc.getDouble("amount");
-                                        target.amount = amount == null ? "0.00" : java.math.BigDecimal.valueOf(amount)
-                                                .setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
-                                        String turn = doc.getString("turn");
-                                        if (turn != null && !turn.isEmpty() && !turn.contains("@")) turn = CloudSync.emailForUid(host, turn);
-                                        target.turn = turn == null || turn.isEmpty() ? target.seller : turn;
-                                        target.state = doc.getString("state") == null ? "Pending" : doc.getString("state");
-                                        Long created = doc.getLong("created");
-                                        target.created = created == null ? 0 : created;
-                                        Long expires = doc.getLong("expiresAt");
-                                        target.expires = expires == null ? 0 : expires;
-                                    }
-                                });
-                            } catch (RuntimeException e) {
-                                android.util.Log.w("CampusTrade", "offer merge failed: " + e.getMessage());
-                            }
+                            mergeOfferDocs(docs.values());
                             if (after != null) after.run();
                         })
                         .addOnFailureListener(e -> {
@@ -1465,6 +1634,45 @@ public class Market {
                 });
     }
 
+    /** Merge any set of offer documents into the local feature store. */
+    private void mergeOfferDocs(java.util.Collection<com.google.firebase.firestore.DocumentSnapshot> docs) {
+        try {
+            host.featureStore.update(f -> {
+                for (com.google.firebase.firestore.DocumentSnapshot doc : docs) {
+                    CampusFeatures.Offer target = null;
+                    for (CampusFeatures.Offer o : f.offers) if (o.id.equals(doc.getId())) { target = o; break; }
+                    if (target == null) {
+                        target = new CampusFeatures.Offer();
+                        target.id = doc.getId();
+                        f.offers.add(target);
+                    }
+                    String remoteListing = doc.getString("listingId");
+                    String localListing = CloudSync.localId(host, remoteListing == null ? "" : remoteListing);
+                    target.listing = localListing.isEmpty() ? (remoteListing == null ? "" : remoteListing) : localListing;
+                    String buyer = doc.getString("buyerEmail");
+                    if (buyer == null || buyer.isEmpty()) buyer = CloudSync.emailForUid(host, doc.getString("buyerId"));
+                    String seller = doc.getString("sellerEmail");
+                    if (seller == null || seller.isEmpty()) seller = CloudSync.emailForUid(host, doc.getString("sellerId"));
+                    target.buyer = buyer == null ? "" : buyer;
+                    target.seller = seller == null ? "" : seller;
+                    Double amount = doc.getDouble("amount");
+                    target.amount = amount == null ? "0.00" : java.math.BigDecimal.valueOf(amount)
+                            .setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
+                    String turn = doc.getString("turn");
+                    if (turn != null && !turn.isEmpty() && !turn.contains("@")) turn = CloudSync.emailForUid(host, turn);
+                    target.turn = turn == null || turn.isEmpty() ? target.seller : turn;
+                    target.state = doc.getString("state") == null ? "Pending" : doc.getString("state");
+                    Long created = doc.getLong("created");
+                    target.created = created == null ? 0 : created;
+                    Long expires = doc.getLong("expiresAt");
+                    target.expires = expires == null ? 0 : expires;
+                }
+            });
+        } catch (RuntimeException e) {
+            android.util.Log.w("CampusTrade", "offer merge failed: " + e.getMessage());
+        }
+    }
+
     public void reviewOffer(String id) {
         final CampusFeatures.Offer o = host.featureStore.data.findOffer(id);
         if (o == null) return;
@@ -1473,6 +1681,14 @@ public class Market {
         final String state = expiredReservation ? "Expired" : o.state;
         final Dialog page = new Dialog(host);
         page.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        currentOfferPage = page;
+        currentOfferId = id;
+        page.setOnDismissListener(d -> {
+            if (currentOfferPage == page) {
+                currentOfferPage = null;
+                currentOfferId = "";
+            }
+        });
         LinearLayout root = new LinearLayout(host);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(host.page);
@@ -1650,7 +1866,12 @@ public class Market {
         host.featureStore.update(f -> f.respond(id, host.currentStudentEmail, action, amount, System.currentTimeMillis()));
         CampusFeatures.Offer o = host.featureStore.data.findOffer(id);
         cloudUpdateOffer(o);
-        host.inbox.localMessage(host.currentStudentEmail.equals(o.buyer) ? o.seller : o.buyer, "Offer " + o.state.toLowerCase(Locale.ROOT) + ": R" + o.amount); host.showAppScreen("Offers");
+        String other = host.currentStudentEmail.equals(o.buyer) ? o.seller : o.buyer;
+        String title = "Offer " + o.state.toLowerCase(Locale.ROOT);
+        String body = "R" + o.amount;
+        host.notification.addNotification(other, title, body, "marketplace", "");
+        host.notification.sendPush(other, title, body, "marketplace", "");
+        host.showAppScreen("Offers");
     }
 
     public void cancelOffer(String id) {
@@ -1688,6 +1909,9 @@ public class Market {
             top.addView(host.ui.statusPill(existing.agreed() ? "Agreed" : "Awaiting"));
             body.addView(top);
             body.addView(host.ui.bodyText(host.messageTime(existing.time), host.muted, 12));
+            body.addView(host.ui.bodyText("Arrangement v" + Math.max(1, existing.revision)
+                    + (existing.updatedAt > 0 ? " · updated " + host.messageTime(existing.updatedAt) : ""),
+                    host.muted, 11));
             body.addView(pickupTickRow("Buyer confirmed", existing.confirmed.contains(order.buyerEmail)));
             body.addView(pickupTickRow("Seller confirmed", existing.confirmed.contains(order.sellerEmail)));
             if (!existing.confirmed.contains(host.currentStudentEmail)) {
@@ -1697,8 +1921,14 @@ public class Market {
                         host.featureStore.update(f -> f.confirmPickup(order.id, host.currentStudentEmail));
                         CampusFeatures.Pickup updated = host.featureStore.data.pickup(order.id);
                         host.order.cloudSavePickup(updated);
-                        host.inbox.localMessage(order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail,
-                                "Pickup confirmed: " + updated.location + " · " + host.messageTime(updated.time));
+                        String other = order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail;
+                        host.notification.addNotification(other, "Pickup confirmed",
+                                order.itemTitle + " · " + updated.location + " · arrangement v" + Math.max(1, updated.revision),
+                                "payment", "", order.id);
+                        host.notification.sendPush(other, "Pickup confirmed",
+                                order.itemTitle + " · " + updated.location, "payment", "", order.id);
+                        host.notification.showCampusNotification(updated.agreed() ? "Pickup agreed" : "Pickup confirmed",
+                                order.itemTitle + " · " + updated.location, "payment", "", order.id);
                         if (sheetRef[0] != null) sheetRef[0].dismiss();
                         Toast.makeText(host, updated.agreed() ? "Pickup agreed by both students." : "Pickup confirmed. Waiting for the other student.",
                                 Toast.LENGTH_SHORT).show();
@@ -1764,8 +1994,16 @@ public class Market {
                 host.featureStore.update(f -> created[0] = f.schedule(order.id, order.buyerEmail, order.sellerEmail,
                         host.currentStudentEmail, meetingPoint, time[0], System.currentTimeMillis()));
                 host.order.cloudSavePickup(created[0]);
-                host.inbox.localMessage(order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail,
-                        "Pickup proposed: " + meetingPoint + " · " + host.messageTime(time[0]));
+                String other = order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail;
+                String change = created[0].revision <= 1 ? "Pickup proposed" : "Pickup changed";
+                host.notification.addNotification(other, change,
+                        order.itemTitle + " · " + meetingPoint + " · " + host.messageTime(time[0])
+                                + " · arrangement v" + created[0].revision, "payment", "", order.id);
+                host.notification.sendPush(other, change,
+                        order.itemTitle + " · " + meetingPoint, "payment", "", order.id);
+                host.notification.showCampusNotification(change,
+                        "Arrangement v" + created[0].revision + " · waiting for confirmation.",
+                        "payment", "", order.id);
                 if (formRef[0] != null) formRef[0].dismiss();
                 host.showAppScreen("Payments");
             } catch (RuntimeException e) {
@@ -2189,7 +2427,7 @@ public class Market {
                     } catch (NumberFormatException ignored) { }
                     repo.createWithId(product.id, uid, host.currentStudentName, product.title,
                             product.description, priceValue, product.category, product.condition,
-                            product.location, product.delivery, "AVAILABLE", finalImage, finalUrls,
+                            product.specs, product.location, product.delivery, "AVAILABLE", finalImage, finalUrls,
                             finalDocumentUrl, finalDocumentName, finalDocumentMime, finalDocumentSize,
                             new ListingRepository.IdCallback() {
                                 @Override public void onOk(String docId) {
@@ -2223,6 +2461,7 @@ public class Market {
                     java.util.Map<String, Object> fields = new java.util.HashMap<>();
                     fields.put("listingN", product.title);
                     fields.put("description", product.description);
+                    fields.put("specs", product.specs);
                     try {
                         fields.put("price", Double.parseDouble(product.price));
                     } catch (NumberFormatException ignored) { }
@@ -2380,11 +2619,186 @@ public class Market {
                 .addOnFailureListener(e -> android.util.Log.w("CampusTrade", "Favourite count sync failed: " + e.getMessage()));
     }
 
+    /** Start the live Firestore feeds used by the marketplace. */
+    public void startLiveUpdates() {
+        String uid = CloudSync.uid(host);
+        if (uid.isEmpty() || listingsListener != null) return;
+        com.google.firebase.firestore.FirebaseFirestore db =
+                com.google.firebase.firestore.FirebaseFirestore.getInstance();
+        listingsListener = db.collection("listings")
+                .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .addSnapshotListener((snap, error) -> {
+                    if (error != null) {
+                        android.util.Log.w("CampusTrade", "listing listener: " + error.getMessage());
+                        return;
+                    }
+                    if (snap == null || host.isDestroyed() || host.isFinishing()) return;
+                    handleLiveListings(snap);
+                });
+        deletedListingsListener = db.collection("deletedListings").limit(200)
+                .addSnapshotListener((snap, error) -> {
+                    if (error != null) {
+                        android.util.Log.w("CampusTrade", "tombstone listener: " + error.getMessage());
+                        return;
+                    }
+                    if (snap == null || host.isDestroyed() || host.isFinishing()) return;
+                    applyDeletedListings(snap.getDocuments());
+                });
+        startOfferListeners(uid);
+    }
+
+    /** Remove the live feeds when the student signs out or the app closes. */
+    public void stopLiveUpdates() {
+        if (listingsListener != null) { listingsListener.remove(); listingsListener = null; }
+        if (deletedListingsListener != null) { deletedListingsListener.remove(); deletedListingsListener = null; }
+        if (offersBuyerListener != null) { offersBuyerListener.remove(); offersBuyerListener = null; }
+        if (offersSellerListener != null) { offersSellerListener.remove(); offersSellerListener = null; }
+        currentOfferPage = null;
+        currentOfferId = "";
+    }
+
+    /** Apply a full listing snapshot without waiting for a screen reopen. */
+    private void handleLiveListings(com.google.firebase.firestore.QuerySnapshot snapshot) {
+        String uid = CloudSync.uid(host);
+        if (uid.isEmpty()) return;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        java.util.List<com.campustrade.auth.model.Listing> items = new java.util.ArrayList<>();
+        for (com.google.firebase.firestore.DocumentSnapshot doc : snapshot.getDocuments()) {
+            com.campustrade.auth.model.Listing item =
+                    doc.toObject(com.campustrade.auth.model.Listing.class);
+            if (item == null) continue;
+            item.setDocId(doc.getId());
+            seen.add(doc.getId());
+            items.add(item);
+        }
+        boolean changed = false;
+        for (com.campustrade.auth.model.Listing item : items) {
+            MainActivity.Product existing = productForRemoteListing(item.getDocId());
+            if (existing == null) {
+                changed |= mergeMarketItems(uid, java.util.Collections.singletonList(item));
+                existing = productForRemoteListing(item.getDocId());
+            }
+            if (existing != null) changed |= applyLiveListing(existing, item);
+        }
+        // A listing removed from Firestore must disappear from the marketplace
+        // on every phone, not only on the phone that deleted it.
+        for (int i = host.products.size() - 1; i >= 0; i--) {
+            MainActivity.Product product = host.products.get(i);
+            String remote = remoteListingId(product);
+            if (!remote.isEmpty() && !seen.contains(remote)) {
+                host.products.remove(i);
+                changed = true;
+            }
+        }
+        if (changed) saveProducts();
+        if (changed) refreshLiveSurfaces();
+    }
+
+    private MainActivity.Product productForRemoteListing(String docId) {
+        if (docId == null || docId.isEmpty()) return null;
+        for (MainActivity.Product product : host.products) {
+            if (product.id.equals("remote-" + docId)) return product;
+            if (remoteListingId(product).equals(docId)) return product;
+        }
+        return null;
+    }
+
+    /** Update one cached listing from its cloud copy, or just its state for the owner. */
+    private boolean applyLiveListing(MainActivity.Product existing,
+                                     com.campustrade.auth.model.Listing item) {
+        String sellerEmail = item.getSellerID() != null && item.getSellerID().equals(CloudSync.uid(host))
+                ? host.currentStudentEmail : CloudSync.emailForUid(host, item.getSellerID());
+        if (sellerEmail == null || sellerEmail.isEmpty()) sellerEmail = item.getSellerID();
+        boolean own = existing.sellerEmail.equalsIgnoreCase(host.currentStudentEmail);
+        long serverUpdated = item.getUpdatedAt() == null ? 0 : item.getUpdatedAt().toDate().getTime();
+        // Don't let an older cloud snapshot overwrite an edit that is still uploading.
+        if (own && serverUpdated > 0 && serverUpdated < existing.updatedTime) {
+            return syncOwnListingStatus(item);
+        }
+        MainActivity.Product replacement = productFromListing(item, sellerEmail, existing.id);
+        replacement.savedBy.addAll(existing.savedBy);
+        replacement.hidden = existing.hidden;
+        if (sameListing(existing, replacement)) return false;
+        int index = host.products.indexOf(existing);
+        if (index >= 0) host.products.set(index, replacement);
+        return index >= 0;
+    }
+
+    private boolean sameListing(MainActivity.Product a, MainActivity.Product b) {
+        if (!a.title.equals(b.title) || !a.price.equals(b.price)
+                || !a.description.equals(b.description) || !a.category.equals(b.category)
+                || !a.condition.equals(b.condition) || !a.location.equals(b.location)
+                || !a.delivery.equals(b.delivery) || !a.status.equals(b.status)
+                || !a.specs.equals(b.specs) || a.negotiable != b.negotiable
+                || a.viewCount != b.viewCount || a.favouriteCount != b.favouriteCount
+                || !a.sellerName.equals(b.sellerName) || !a.createdAt.equals(b.createdAt)
+                || !String.valueOf(a.documentUrl).equals(String.valueOf(b.documentUrl))) return false;
+        if (a.photos.size() != b.photos.size()) return false;
+        for (int i = 0; i < a.photos.size(); i++) {
+            if (!a.photos.get(i).toString().equals(b.photos.get(i).toString())) return false;
+        }
+        return true;
+    }
+
+    /** Redraw whichever read-only screen is currently on top. */
+    private void refreshLiveSurfaces() {
+        if (host.isDestroyed() || host.isFinishing()) return;
+        if ("Market".equals(host.currentTab)) {
+            renderListings();
+        } else if ("Offers".equals(host.currentTab) || "Home".equals(host.currentTab)
+                || "SellerDashboard".equals(host.currentTab) || "AdminAnalytics".equals(host.currentTab)) {
+            host.showAppScreen(host.currentTab);
+        }
+    }
+
     /** Load the first page of listings from Firebase. */
     public void cloudMergeMarket() {
         final String uid = CloudSync.uid(host);
         if (uid.isEmpty()) return;
+        purgeDeletedListings();
         loadMarketPage(null, uid);
+    }
+
+    /** Remove local copies of listings deleted by a moderator. */
+    private void purgeDeletedListings() {
+        com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                .collection("deletedListings").limit(200).get()
+                .addOnSuccessListener(snapshot -> {
+                    if (host.isDestroyed() || host.isFinishing()) return;
+                    applyDeletedListings(snapshot.getDocuments());
+                })
+                .addOnFailureListener(e -> android.util.Log.w("CampusTrade",
+                        "deleted listings sync failed: " + e.getMessage()));
+    }
+
+    private void applyDeletedListings(java.util.List<com.google.firebase.firestore.DocumentSnapshot> docs) {
+        java.util.Set<String> deleted = new java.util.HashSet<>();
+        java.util.Set<String> deletedKeys = new java.util.HashSet<>();
+        for (com.google.firebase.firestore.DocumentSnapshot doc : docs) {
+            com.google.firebase.Timestamp expires = doc.getTimestamp("expiresAt");
+            if (expires != null && expires.toDate().getTime() < System.currentTimeMillis()) continue;
+            deleted.add(doc.getId());
+            String title = doc.getString("title");
+            String seller = doc.getString("sellerEmail");
+            if (title != null && !title.isEmpty() && seller != null && !seller.isEmpty()) {
+                deletedKeys.add((title + "|" + seller).toLowerCase(Locale.ROOT));
+            }
+        }
+        if (deleted.isEmpty() && deletedKeys.isEmpty()) return;
+        boolean changed = false;
+        for (int i = host.products.size() - 1; i >= 0; i--) {
+            MainActivity.Product product = host.products.get(i);
+            String remote = CloudSync.remoteId(host, product.id);
+            String key = (product.title + "|" + product.sellerEmail).toLowerCase(Locale.ROOT);
+            if ((!remote.isEmpty() && deleted.contains(remote)) || deletedKeys.contains(key)) {
+                host.products.remove(i);
+                changed = true;
+            }
+        }
+        if (changed) {
+            saveProducts();
+            refreshLiveSurfaces();
+        }
     }
 
     /** Load the next page after the oldest listing shown. */
@@ -2478,57 +2892,69 @@ public class Market {
                 break;
             }
             if (duplicate) continue;
-            String remoteStatus = "SOLD".equals(item.getStatus()) ? "Sold"
-                    : "PAUSED".equals(item.getStatus()) ? "Paused"
-                    : "RESERVED".equals(item.getStatus()) ? "Reserved"
-                    : "ORDERED".equals(item.getStatus()) ? "Ordered" : "Available";
-            MainActivity.Product product = new MainActivity.Product(item.getListingN(), priceText,
-                    item.getDescription() != null ? item.getDescription() : "",
-                    sellerEmail,
-                    item.getCategory() != null ? item.getCategory() : "Other",
-                    item.getCondition() != null ? item.getCondition() : "Good",
-                    item.getLocation() != null && !item.getLocation().isEmpty()
-                            ? item.getLocation() : "Campus pickup",
-                    item.getDelivery() != null && !item.getDelivery().isEmpty()
-                            ? item.getDelivery() : "Pickup only",
-                    item.getCreatedAt() != null
-                            ? new java.text.SimpleDateFormat("dd MMM, HH:mm",
-                                    java.util.Locale.getDefault()).format(item.getCreatedAt().toDate())
-                            : "",
-                    remoteStatus,
+            MainActivity.Product product = productFromListing(item, sellerEmail,
                     "remote-" + item.getDocId());
-            product.negotiable = item.getNegotiable();
-            product.viewCount = (int) item.getViewCount();
-            product.favouriteCount = (int) item.getFavouriteCount();
-            if (item.getCreatedAt() != null) product.createdTime = item.getCreatedAt().toDate().getTime();
-            if (item.getUpdatedAt() != null) product.updatedTime = item.getUpdatedAt().toDate().getTime();
-            if (item.getExpiresAt() != null) product.expiresTime = item.getExpiresAt().toDate().getTime();
-            product.sellerName = item.getSellerName() == null || item.getSellerName().isEmpty()
-                    ? CloudSync.displayName(host, item.getSellerID()) : item.getSellerName();
-            CloudSync.cacheProfile(host, item.getSellerID(), product.sellerName, sellerEmail);
-            if (item.getPhotos() != null) {
-                for (String url : item.getPhotos()) {
-                    if (url != null && !url.isEmpty() && product.photos.size() < Constants.MAX_LISTING_PHOTOS) {
-                        product.photos.add(Uri.parse(url));
-                    }
-                }
-            }
-            if (product.photos.isEmpty() && item.getImageURL() != null
-                    && !item.getImageURL().isEmpty()) {
-                product.photos.add(Uri.parse(item.getImageURL()));
-            }
-            if (item.getDocumentURL() != null && !item.getDocumentURL().isEmpty()) {
-                product.documentUrl = item.getDocumentURL();
-                product.documentUri = Uri.parse(item.getDocumentURL());
-                product.documentName = item.getDocumentName() == null ? "" : item.getDocumentName();
-                product.documentMime = item.getDocumentMime() == null ? "" : item.getDocumentMime();
-                product.documentSize = item.getDocumentSize();
-            }
             CloudSync.putRemoteId(host, product.id, item.getDocId());
             host.products.add(product);
             changed = true;
         }
         return changed;
+    }
+
+    /** Build a marketplace card from one cloud listing. */
+    private MainActivity.Product productFromListing(com.campustrade.auth.model.Listing item,
+                                                    String sellerEmail, String productId) {
+        String priceText = item.getPrice() == Math.floor(item.getPrice())
+                ? String.valueOf((long) item.getPrice())
+                : String.valueOf(item.getPrice());
+        String remoteStatus = "SOLD".equals(item.getStatus()) ? "Sold"
+                : "PAUSED".equals(item.getStatus()) ? "Paused"
+                : "RESERVED".equals(item.getStatus()) ? "Reserved"
+                : "ORDERED".equals(item.getStatus()) ? "Ordered" : "Available";
+        MainActivity.Product product = new MainActivity.Product(item.getListingN(), priceText,
+                item.getDescription() != null ? item.getDescription() : "",
+                sellerEmail,
+                item.getCategory() != null ? item.getCategory() : "Other",
+                item.getCondition() != null ? item.getCondition() : "Good",
+                item.getLocation() != null && !item.getLocation().isEmpty()
+                        ? item.getLocation() : "Campus pickup",
+                item.getDelivery() != null && !item.getDelivery().isEmpty()
+                        ? item.getDelivery() : "Campus pickup",
+                item.getCreatedAt() != null
+                        ? new java.text.SimpleDateFormat("dd MMM, HH:mm",
+                                java.util.Locale.getDefault()).format(item.getCreatedAt().toDate())
+                        : "",
+                remoteStatus,
+                productId);
+        product.negotiable = item.getNegotiable();
+        product.specs = item.getSpecs() == null ? "" : item.getSpecs();
+        product.viewCount = (int) item.getViewCount();
+        product.favouriteCount = (int) item.getFavouriteCount();
+        if (item.getCreatedAt() != null) product.createdTime = item.getCreatedAt().toDate().getTime();
+        if (item.getUpdatedAt() != null) product.updatedTime = item.getUpdatedAt().toDate().getTime();
+        if (item.getExpiresAt() != null) product.expiresTime = item.getExpiresAt().toDate().getTime();
+        product.sellerName = item.getSellerName() == null || item.getSellerName().isEmpty()
+                ? CloudSync.displayName(host, item.getSellerID()) : item.getSellerName();
+        CloudSync.cacheProfile(host, item.getSellerID(), product.sellerName, sellerEmail);
+        if (item.getPhotos() != null) {
+            for (String url : item.getPhotos()) {
+                if (url != null && !url.isEmpty() && product.photos.size() < Constants.MAX_LISTING_PHOTOS) {
+                    product.photos.add(Uri.parse(url));
+                }
+            }
+        }
+        if (product.photos.isEmpty() && item.getImageURL() != null
+                && !item.getImageURL().isEmpty()) {
+            product.photos.add(Uri.parse(item.getImageURL()));
+        }
+        if (item.getDocumentURL() != null && !item.getDocumentURL().isEmpty()) {
+            product.documentUrl = item.getDocumentURL();
+            product.documentUri = Uri.parse(item.getDocumentURL());
+            product.documentName = item.getDocumentName() == null ? "" : item.getDocumentName();
+            product.documentMime = item.getDocumentMime() == null ? "" : item.getDocumentMime();
+            product.documentSize = item.getDocumentSize();
+        }
+        return product;
     }
 
     /** Show buyer progress on the owner's copy. */
@@ -2592,7 +3018,7 @@ public class Market {
                     && !ownsListing(product)) continue;
             if ((!publicListing(product) && !(host.marketFilter.equals("Mine") && ownsListing(product)))) continue;
             String searchable = product.title + " " + product.category + " " + product.description
-                    + " " + product.documentName;
+                    + " " + product.documentName + " " + product.delivery + " " + product.specs;
             if (!searchable.toLowerCase(Locale.ROOT).contains(host.marketQuery.trim().toLowerCase(Locale.ROOT))) continue;
             if (host.marketFilter.equals("Mine") && !ownsListing(product)) {
                 continue;
@@ -2611,9 +3037,7 @@ public class Market {
                         && priceValue.compareTo(new BigDecimal(host.marketMaxPrice)) > 0) continue;
             } catch (NumberFormatException ignored) { }
             shown++;
-            CampusFeatures.Offer reservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
-            String state = expired(product) ? "Expired"
-                    : reservation != null && product.status.equals("Available") ? "Reserved" : product.status;
+            String state = marketState(product);
             LinearLayout card = host.ui.card(host.page, 0, grid ? host.ui.dp(8) : 0);
             if (grid) card.setBackground(host.ui.strokedRound(host.surface(), 10, host.line));
             card.setPadding(0, host.ui.dp(grid ? 8 : 10), 0, host.ui.dp(grid ? 8 : 10));
@@ -2648,11 +3072,19 @@ public class Market {
             priceRow.addView(host.ui.statusPill(state));
             details.addView(priceRow);
             String sellerName = sellerLabel(product);
-            TextView seller = host.ui.bodyText(sellerName + (grid ? "" : " / " + product.location), host.muted, 11);
+            String handover = fulfilmentLabel(product);
+            TextView seller = host.ui.bodyText(sellerName
+                    + (grid ? "" : " / " + (handover.equals("Delivery only") ? handover : product.location + " / " + handover)),
+                    host.muted, 11);
             seller.setPadding(0, host.ui.dp(4), 0, 0);
             seller.setMaxLines(1);
             seller.setEllipsize(TextUtils.TruncateAt.END);
             details.addView(seller);
+            CampusFeatures.Offer cardReservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
+            if (cardReservation != null && (cardReservation.buyer.equals(host.currentStudentEmail)
+                    || cardReservation.seller.equals(host.currentStudentEmail))) {
+                details.addView(host.ui.bodyText("Agreed price: R" + cardReservation.amount, host.blue, 10));
+            }
             if (!grid && product.hasDocument()) {
                 TextView document = host.ui.bodyText("Document: " + (product.documentName.isEmpty()
                         ? "attached" : product.documentName), host.muted, 11);
@@ -2695,6 +3127,28 @@ public class Market {
     }
 
     /** Full-page listing detail with a large image and sticky actions. */
+    /**
+     * Saved is private to the student who saved the listing. Once anyone has
+     * saved it, the rest of the market sees Reserved.
+     */
+    /** Wording for the listing's handover method. */
+    String fulfilmentLabel(MainActivity.Product product) {
+        return product.delivery != null && product.delivery.toLowerCase(Locale.ROOT).contains("delivery")
+                ? "Delivery only" : "Campus pickup";
+    }
+
+    String marketState(MainActivity.Product product) {        if (product.status == null) product.status = "Available";
+        if (product.status.equals("Sold")) return "Sold";
+        if (expired(product)) return "Expired";
+        if (!product.status.equals("Available")) return product.status;
+        CampusFeatures.Offer reservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
+        if (reservation != null) return "Reserved";
+        if (ownsListing(product)) return "Available";
+        if (product.savedBy.contains(host.currentStudentEmail)) return "Saved";
+        if (!product.savedBy.isEmpty() || product.favouriteCount > 0) return "Reserved";
+        return "Available";
+    }
+
     void showProductDetails(MainActivity.Product product) {
         if (!ownsListing(product)) incrementView(product);
 
@@ -2770,12 +3224,18 @@ public class Market {
 
         LinearLayout chips = host.ui.horizontal();
         chips.setPadding(0, host.ui.dp(8), 0, host.ui.dp(10));
+        String state = marketState(product);
         CampusFeatures.Offer reservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
-        String state = expired(product) ? "Expired"
-                : reservation != null && product.status.equals("Available") ? "Reserved" : product.status;
         chips.addView(host.ui.statusPill(state));
         chips.addView(host.ui.space(host.ui.dp(6), 1));
         int detailChipBg = host.nightActive ? Color.rgb(48, 48, 52) : Color.rgb(242, 240, 235);
+        if (reservation != null && (reservation.buyer.equals(host.currentStudentEmail)
+                || reservation.seller.equals(host.currentStudentEmail))) {
+            chips.addView(host.ui.space(host.ui.dp(6), 1));
+            TextView agreedChip = host.ui.chip("Agreed R" + reservation.amount, detailChipBg, host.blue);
+            agreedChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
+            chips.addView(agreedChip);
+        }
         TextView conditionChip = host.ui.chip(product.condition, detailChipBg, host.text);
         conditionChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
         chips.addView(conditionChip);
@@ -2785,10 +3245,24 @@ public class Market {
             negotiableChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
             chips.addView(negotiableChip);
         }
+        if (fulfilmentLabel(product).equals("Delivery only")) {
+            chips.addView(host.ui.space(host.ui.dp(6), 1));
+            TextView deliveryChip = host.ui.chip("Delivery only", detailChipBg, host.text);
+            deliveryChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
+            chips.addView(deliveryChip);
+        }
         content.addView(chips);
 
         content.addView(host.ui.bodyText(product.description, host.text, 14));
-        content.addView(host.ui.bodyText(product.category + " / " + product.location + " / " + product.delivery
+        if (product.specs != null && !product.specs.trim().isEmpty()) {
+            TextView specsTitle = host.ui.titleText("Tech specs", host.text, 14);
+            specsTitle.setPadding(0, host.ui.dp(14), 0, host.ui.dp(4));
+            content.addView(specsTitle);
+            content.addView(host.ui.bodyText(product.specs, host.muted, 12));
+        }
+        String handover = fulfilmentLabel(product);
+        content.addView(host.ui.bodyText(product.category + " / "
+                + (handover.equals("Delivery only") ? handover : product.location + " / " + handover)
                 + "\n" + (product.viewCount + " views / " + product.favouriteCount + " saves"), host.muted, 12));
 
         if (product.hasDocument()) {
@@ -2847,7 +3321,7 @@ public class Market {
         }
         double sellerRating = host.featureStore.data.rating(product.sellerEmail);
         String rep = (verifiedSeller ? "Verified campus student" : "Campus seller")
-                + " / " + (sellerRating <= 0 ? "No ratings yet" : String.format(Locale.ROOT, "%.1f / 5", sellerRating))
+                + " / " + (sellerRating <= 0 ? "No ratings yet" : RatingStars.of(sellerRating))
                 + " / " + (completedSales <= 0 ? "New seller" : completedSales + " completed sale(s)");
         sellerCopy.addView(host.ui.bodyText(rep, host.muted, 10));
         sellerTop.addView(sellerCopy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -2883,7 +3357,7 @@ public class Market {
             });
         }
         TextView reviews = host.ui.linkText(sellerRating <= 0 ? "See seller reviews"
-                : String.format(Locale.ROOT, "Seller rating: %.1f / 5", sellerRating));
+                : RatingStars.label("Seller rating:", sellerRating));
         reviews.setPadding(host.ui.dp(4), host.ui.dp(10), 0, 0);
         reviews.setOnClickListener(v -> { page.dismiss(); host.profile.showStudentReviews(product.sellerEmail); });
         content.addView(reviews);
@@ -3015,7 +3489,7 @@ public class Market {
             if (!ownsListing(product)) sellerLine.setOnClickListener(v -> host.profile.showSellerProfile(product.sellerEmail));
             card.addView(sellerLine);
             TextView reputation = host.ui.linkText(host.featureStore.data.rating(product.sellerEmail) == 0 ? "Seller reviews"
-                    : String.format(Locale.ROOT, "Seller rating: %.1f / 5", host.featureStore.data.rating(product.sellerEmail)));
+                    : RatingStars.label("Seller rating:", host.featureStore.data.rating(product.sellerEmail)));
             reputation.setOnClickListener(v -> host.profile.showStudentReviews(product.sellerEmail)); card.addView(reputation);
             ScrollView scroll = new ScrollView(host);
             scroll.addView(card);
@@ -3116,6 +3590,7 @@ public class Market {
                             record.getString("location"), record.getString("delivery"), record.getString("created"),
                             record.optString("status", "Available"), record.getString("id"));
                     product.sellerName = record.optString("sellerName", "");
+                    product.specs = record.optString("specs", "");
                     product.hidden = record.optBoolean("hidden", false);
                     product.createdTime = record.optLong("createdTime", 0);
                     product.expiresTime = record.optLong("expiresTime", 0);
@@ -3157,7 +3632,7 @@ public class Market {
                 JSONArray photos = new JSONArray();
                 for (Uri uri : product.photos) photos.put(uri.toString());
                 records.put(new JSONObject().put("id", product.id).put("title", product.title).put("price", product.price)
-                        .put("description", product.description).put("seller", product.sellerEmail)
+                        .put("description", product.description).put("specs", product.specs).put("seller", product.sellerEmail)
                         .put("sellerName", product.sellerName == null ? "" : product.sellerName).put("category", product.category)
                         .put("condition", product.condition).put("location", product.location).put("delivery", product.delivery)
                         .put("created", product.createdAt).put("status", product.status).put("photos", photos)

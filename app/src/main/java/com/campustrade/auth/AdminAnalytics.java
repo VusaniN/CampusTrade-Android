@@ -134,12 +134,19 @@ public final class AdminAnalytics {
         results.addView(third);
         LinearLayout fourth = host.ui.horizontal();
         fourth.addView(kpi("Completed orders", String.valueOf(stats.completedOrders), "Sales in period"), cell(false));
-        fourth.addView(kpi("Recorded value", "R" + money(stats.completedValue), "What buyers paid"), cell(true));
+        fourth.addView(kpi("Recorded value", "R" + money(stats.completedValue),
+                "After approved returns"), cell(true));
         results.addView(fourth);
         LinearLayout fifth = host.ui.horizontal();
         fifth.addView(kpi("Pending orders", String.valueOf(stats.pendingOrders), stats.cancelledOrders + " cancelled"), cell(false));
-        fifth.addView(kpi("Reports", String.valueOf(stats.reports), stats.openReportsAll + " still open"), cell(true));
+        fifth.addView(kpi("Approved returns", String.valueOf(stats.approvedReturns),
+                "R" + money(stats.returnedValue) + " subtracted"), cell(true));
         results.addView(fifth);
+        LinearLayout sixth = host.ui.horizontal();
+        sixth.addView(kpi("Reports", String.valueOf(stats.reports), stats.openReportsAll + " still open"), cell(false));
+        sixth.addView(kpi("Report types", stats.reportListing + " / " + stats.reportReview + " / " + stats.reportUser,
+                "Listing / review / student"), cell(true));
+        results.addView(sixth);
 
         if (hasChartData(stats.userGrowth)) {
             host.profile.settingsHeading(results, "User growth");
@@ -163,7 +170,7 @@ public final class AdminAnalytics {
             host.profile.settingsHeading(results, "Transactions");
             if (hasChartData(stats.transactionValue)) {
                 addChart(results, "Recorded sale value", stats.transactionValue, AnalyticsChart.Mode.LINE,
-                        "Completed orders only. This is recorded value, not platform revenue.");
+                        "Completed orders minus approved returns. This is recorded value, not platform revenue.");
             }
             if (hasChartData(stats.orderStatus)) {
                 addChart(results, "Orders by status", stats.orderStatus, AnalyticsChart.Mode.BAR,
@@ -171,11 +178,15 @@ public final class AdminAnalytics {
             }
         }
 
-        if (hasChartData(stats.reportStatus) || stats.openReportsAll > 0) {
+        if (hasChartData(stats.reportStatus) || hasChartData(stats.reportTypes) || stats.openReportsAll > 0) {
             host.profile.settingsHeading(results, "Reports");
             if (hasChartData(stats.reportStatus)) {
                 addChart(results, "Reports by status", stats.reportStatus, AnalyticsChart.Mode.BAR,
                         "Reports created in this period.");
+            }
+            if (hasChartData(stats.reportTypes)) {
+                addChart(results, "Reports by reported entity", stats.reportTypes, AnalyticsChart.Mode.BAR,
+                        "Each listing, review and student account is counted by its real report target.");
             }
             addReportSummary(results, stats);
         }
@@ -242,6 +253,9 @@ public final class AdminAnalytics {
         card.addView(host.ui.titleText("Moderation summary", host.text, 14));
         card.addView(host.ui.bodyText(stats.reports + (stats.reports == 1 ? " new report" : " new reports")
                 + " in this period · " + stats.openReports + " still open from this period", host.muted, 11));
+        card.addView(host.ui.bodyText("Listings " + stats.reportListing + " · Reviews " + stats.reportReview
+                + " · Students " + stats.reportUser, host.text, 12));
+        card.addView(host.ui.bodyText("Reported targets are stored as listing, review or student entities, so totals never merge the three.", host.muted, 11));
         card.addView(host.ui.bodyText("Open moderation to review reports and account actions.", host.muted, 11));
         card.setOnClickListener(v -> host.showAppScreen("AdminReports"));
         content.addView(card);
@@ -273,15 +287,18 @@ public final class AdminAnalytics {
         static final String[] CATEGORIES = {"Books", "Technology", "Stationery", "Other"};
         int users, activeUsers, sellers, buyers;
         int listings, activeListings, reservedListings, soldListings;
-        int completedOrders, pendingOrders, cancelledOrders;
+        int completedOrders, pendingOrders, cancelledOrders, approvedReturns;
         int reports, openReports, openReportsAll;
+        int reportListing, reportReview, reportUser;
         BigDecimal completedValue = BigDecimal.ZERO;
+        BigDecimal returnedValue = BigDecimal.ZERO;
         final List<AnalyticsChart.Entry> userGrowth = new ArrayList<>();
         final List<AnalyticsChart.Entry> categories = new ArrayList<>();
         final List<AnalyticsChart.Entry> listingStatus = new ArrayList<>();
         final List<AnalyticsChart.Entry> transactionValue = new ArrayList<>();
         final List<AnalyticsChart.Entry> orderStatus = new ArrayList<>();
         final List<AnalyticsChart.Entry> reportStatus = new ArrayList<>();
+        final List<AnalyticsChart.Entry> reportTypes = new ArrayList<>();
         final List<String> recentUsers = new ArrayList<>();
         final List<String> recentListings = new ArrayList<>();
         final List<String> recentOrders = new ArrayList<>();
@@ -297,7 +314,10 @@ public final class AdminAnalytics {
             int active = 0, reserved = 0, sold = 0, other = 0;
             int completed = 0, pending = 0, cancelled = 0;
             int open = 0, resolved = 0, openAll = 0;
+            int listingReports = 0, reviewReports = 0, userReports = 0;
+            int returns = 0;
             BigDecimal value = BigDecimal.ZERO;
+            BigDecimal returned = BigDecimal.ZERO;
             ArrayList<DocRow> recentUserRows = new ArrayList<>();
             ArrayList<DocRow> recentListingRows = new ArrayList<>();
             ArrayList<DocRow> recentOrderRows = new ArrayList<>();
@@ -313,7 +333,8 @@ public final class AdminAnalytics {
                 if (cutoff == 0 || (activeStamp != null && activeStamp >= cutoff)) activeUsers++;
                 if (!newInPeriod) continue;
                 String bucket = month(created);
-                if (!bucket.isEmpty()) userMap.put(bucket, userMap.getOrDefault(bucket, 0f) + 1f);
+                if (!bucket.isEmpty()) userMap.put(bucket,
+                        (userMap.containsKey(bucket) ? userMap.get(bucket) : 0f) + 1f);
                 String name = doc.getString("stuName");
                 if (name == null || name.isEmpty()) name = doc.getString("stuEmail");
                 if (name == null || name.isEmpty()) name = "Student";
@@ -334,7 +355,8 @@ public final class AdminAnalytics {
                     if (option.equalsIgnoreCase(category)) { category = option; knownCategory = true; break; }
                 }
                 if (!knownCategory) category = "Other";
-                categoryMap.put(category, categoryMap.getOrDefault(category, 0f) + 1f);
+                categoryMap.put(category,
+                        (categoryMap.containsKey(category) ? categoryMap.get(category) : 0f) + 1f);
                 if (status.equals("AVAILABLE")) active++;
                 else if (status.equals("RESERVED") || status.equals("ORDERED")) reserved++;
                 else if (status.equals("SOLD")) sold++;
@@ -357,7 +379,19 @@ public final class AdminAnalytics {
                     completed++;
                     value = value.add(BigDecimal.valueOf(amount));
                     String bucket = month(created);
-                    if (!bucket.isEmpty()) valueMap.put(bucket, valueMap.getOrDefault(bucket, 0f) + (float) amount);
+                    if (!bucket.isEmpty()) valueMap.put(bucket,
+                            (valueMap.containsKey(bucket) ? valueMap.get(bucket) : 0f) + (float) amount);
+                    // An approved return reduces both the headline value and
+                    // the monthly chart by the returned sale amount.
+                    if ("Approved".equalsIgnoreCase(safe(doc.getString("returnOutcome")))) {
+                        returns++;
+                        returned = returned.add(BigDecimal.valueOf(amount));
+                        value = value.subtract(BigDecimal.valueOf(amount));
+                        if (!bucket.isEmpty()) {
+                            valueMap.put(bucket, Math.max(0f,
+                                    (valueMap.containsKey(bucket) ? valueMap.get(bucket) : 0f) - (float) amount));
+                        }
+                    }
                 } else if (status.equals("REQUESTED") || status.equals("HELD")) pending++;
                 else if (status.equals("CANCELLED")) cancelled++;
                 String title = safe(doc.getString("title"));
@@ -372,6 +406,16 @@ public final class AdminAnalytics {
                 if (cutoff > 0 && created < cutoff) continue;
                 reports++;
                 if (state.equals("Open")) open++; else resolved++;
+                String productId = safe(doc.getString("productId"));
+                String entity = safe(doc.getString("entityType")).toLowerCase(Locale.ROOT);
+                if (entity.isEmpty()) {
+                    if (productId.startsWith("review:")) entity = "review";
+                    else if (productId.startsWith("user:")) entity = "user";
+                    else entity = "listing";
+                }
+                if (entity.equals("review")) reviewReports++;
+                else if (entity.equals("user")) userReports++;
+                else listingReports++;
             }
 
             activeListings = active;
@@ -382,10 +426,15 @@ public final class AdminAnalytics {
             completedOrders = completed;
             pendingOrders = pending;
             cancelledOrders = cancelled;
+            approvedReturns = returns;
             openReports = open;
             openReportsAll = openAll;
             reports = open + resolved;
+            reportListing = listingReports;
+            reportReview = reviewReports;
+            reportUser = userReports;
             completedValue = value;
+            returnedValue = returned;
             userGrowth.addAll(entriesTime(userMap));
             categories.addAll(entriesNonZero(categoryMap));
             transactionValue.addAll(entriesTime(valueMap));
@@ -398,6 +447,9 @@ public final class AdminAnalytics {
             orderStatus.add(new AnalyticsChart.Entry("Cancelled", cancelled));
             reportStatus.add(new AnalyticsChart.Entry("Open", open));
             reportStatus.add(new AnalyticsChart.Entry("Resolved", resolved));
+            reportTypes.add(new AnalyticsChart.Entry("Listings", listingReports));
+            reportTypes.add(new AnalyticsChart.Entry("Reviews", reviewReports));
+            reportTypes.add(new AnalyticsChart.Entry("Students", userReports));
             recentUsers.addAll(recent(recentUserRows));
             recentListings.addAll(recent(recentListingRows));
             recentOrders.addAll(recent(recentOrderRows));

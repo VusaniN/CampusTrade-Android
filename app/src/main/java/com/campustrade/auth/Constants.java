@@ -18,5 +18,12 @@ public final class Constants {
     public static final String CLOUDINARY_PRESET = "campus_trade";
 
     // ---- Notifications ----
-    public static final String NOTIFICATION_CHANNEL_ID = "campustrade_updates_v2";
+    public static final String NOTIFICATION_CHANNEL_ID = "campustrade_updates_v3";
+    public static final String ORDER_CHANNEL_ID = "campustrade_orders_v3";
+    public static final String CHAT_CHANNEL_ID = "campustrade_chats_v3";
+
+    // ---- Invoice email relay (Google Apps Script + Gmail) ----
+    public static final String INVOICE_EMAIL_ENDPOINT =
+            "https://script.google.com/macros/s/AKfycbyK25iK_D-mmdnRNXU8Xdl5tnrKmCHPCf3yg468w1z-EU-fPTx6IvUDoKYvF3JQvrRR/exec";
+    public static final String INVOICE_EMAIL_SECRET = "This_is_for_campusTrade2026";
 }
