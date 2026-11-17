@@ -2622,18 +2622,10 @@ public class Order {
         LinearLayout.LayoutParams cameraParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
         cameraParams.topMargin = host.ui.dp(10);
         body.addView(camera, cameraParams);
-        Button gallery = host.ui.secondaryButton("Choose from gallery");
-        LinearLayout.LayoutParams galleryParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
-        galleryParams.topMargin = host.ui.dp(8);
-        body.addView(gallery, galleryParams);
         Dialog sheet = host.ui.showBottomSheet("Collection photo", body);
         camera.setOnClickListener(v -> {
             sheet.dismiss();
             launchCollectionCamera(order);
-        });
-        gallery.setOnClickListener(v -> {
-            sheet.dismiss();
-            launchCollectionGallery(order);
         });
     }
 
@@ -2651,20 +2643,7 @@ public class Order {
             host.startActivityForResult(capture, MainActivity.COLLECTION_CAMERA_REQUEST);
         } catch (Exception e) {
             pendingCollectionPhoto = null;
-            host.ui.showSimpleMessage("Camera unavailable", "Open the gallery instead, or check camera permission in Settings.");
-        }
-    }
-
-    private void launchCollectionGallery(MainActivity.TransactionRecord order) {
-        host.pendingCollectionOrderId = order.id;
-        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        pick.addCategory(Intent.CATEGORY_OPENABLE);
-        pick.setType("image/*");
-        pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        try {
-            host.startActivityForResult(pick, MainActivity.COLLECTION_GALLERY_REQUEST);
-        } catch (android.content.ActivityNotFoundException e) {
-            host.ui.showSimpleMessage("Gallery unavailable", "No photo picker is available on this device.");
+            host.ui.showSimpleMessage("Camera unavailable", "Check camera permission in Settings and try again.");
         }
     }
 

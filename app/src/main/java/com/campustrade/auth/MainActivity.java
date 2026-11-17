@@ -278,7 +278,6 @@ public class MainActivity extends Activity {
     static final int LISTING_DOCUMENT_REQUEST = 73;
     static final int PROFILE_PHOTO_REQUEST = 74;
     static final int COLLECTION_CAMERA_REQUEST = 76;
-    static final int COLLECTION_GALLERY_REQUEST = 77;
     static final int LOCATION_PERMISSION_REQUEST = 83;
     String pendingCollectionOrderId = "";
     String notificationFilter = "All";
@@ -777,26 +776,14 @@ public class MainActivity extends Activity {
             }).start();
             return;
         }
-        if (requestCode == COLLECTION_CAMERA_REQUEST || requestCode == COLLECTION_GALLERY_REQUEST) {
+        if (requestCode == COLLECTION_CAMERA_REQUEST) {
             String orderId = pendingCollectionOrderId;
             pendingCollectionOrderId = "";
             if (resultCode != RESULT_OK || orderId == null || orderId.isEmpty()) {
                 order.collectionPhotoCancelled();
                 return;
             }
-            Uri uri = null;
-            if (requestCode == COLLECTION_CAMERA_REQUEST) {
-                uri = order.pendingCollectionPhoto;
-            } else if (data != null) {
-                uri = data.getData();
-                if (uri != null) {
-                    try {
-                        getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    } catch (SecurityException ignored) {
-                    }
-                }
-            }
-            order.receiveCollectionPhoto(orderId, uri);
+            order.receiveCollectionPhoto(orderId, order.pendingCollectionPhoto);
             return;
         }
         if (requestCode == LISTING_DOCUMENT_REQUEST) {
