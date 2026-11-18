@@ -13,6 +13,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.net.Uri;
+import android.text.Editable;
 import android.text.InputType;
 import android.text.InputFilter;
 import android.view.Gravity;
@@ -1018,35 +1019,125 @@ public class Profile {
 
     private void changePassword() {
         LinearLayout form = host.ui.workflowForm();
+        form.addView(host.ui.bodyText("Enter your current password first, then choose and confirm a new password.",
+                host.muted, 11));
         EditText oldPassword = host.ui.listingField(form, "Current password",
                 "Enter the password you use now",
-                android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        TextView oldError = host.ui.fieldError();
+        form.addView(oldError);
         EditText newPassword = host.ui.listingField(form, "New password",
                 "10+ characters, with upper, lower, number and symbol",
-                android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        EditText confirmPassword = host.ui.listingField(form, "Confirm new password",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        TextView newError = host.ui.fieldError();
+        form.addView(newError);
+        EditText confirmPassword = host.ui.listingField(form, "Re-enter new password",
                 "Type the new password again",
-                android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        host.ui.workflowDialog("Change password", form, "Update password", () -> {
-            String oldValue = host.ui.text(oldPassword);
-            String newValue = host.ui.text(newPassword);
-            String confirmValue = host.ui.text(confirmPassword);
-            if (oldValue.isEmpty()) throw new RuntimeException("Enter your current password.");
-            if (!host.ui.isStrongPassword(newValue)) {
-                throw new RuntimeException("Use 10+ characters with uppercase, lowercase, a number and a symbol.");
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        TextView confirmError = host.ui.fieldError();
+        form.addView(confirmError);
+        TextView generalError = host.ui.fieldError();
+        form.addView(generalError);
+        ScrollView scroll = new ScrollView(host);
+        scroll.addView(form);
+        AlertDialog dialog = host.ui.dialog()
+                .setTitle("Change password")
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Update password", null)
+                .create();
+        oldPassword.addTextChangedListener(new MainActivity.SimpleWatcher() {
+            @Override public void afterTextChanged(Editable s) {
+                host.ui.clearFieldError(oldPassword, oldError);
+                generalError.setVisibility(View.GONE);
             }
-            if (!newValue.equals(confirmValue)) throw new RuntimeException("The new passwords don't match.");
-            if (newValue.equals(oldValue)) throw new RuntimeException("Choose a password you haven't used here.");
-            new AuthRepository().changePassword(oldValue, newValue, new AuthRepository.SimpleCallback() {
-                @Override public void onOk() {
-                    host.ui.showSimpleMessage("Password updated",
-                            "Your CampusTrade password was changed on this account.");
-                }
-                @Override public void onBad(String message) {
-                    host.ui.showSimpleMessage("Password didn't change", message);
-                }
-            });
         });
+        newPassword.addTextChangedListener(new MainActivity.SimpleWatcher() {
+            @Override public void afterTextChanged(Editable s) {
+                host.ui.clearFieldError(newPassword, newError);
+                if (!host.ui.text(confirmPassword).isEmpty()
+                        && !host.ui.text(confirmPassword).equals(s.toString())) {
+                    host.ui.showFieldError(confirmPassword, confirmError, "The new passwords don't match.");
+                } else {
+                    host.ui.clearFieldError(confirmPassword, confirmError);
+                }
+            }
+        });
+        confirmPassword.addTextChangedListener(new MainActivity.SimpleWatcher() {
+            @Override public void afterTextChanged(Editable s) {
+                String confirm = s.toString();
+                if (!confirm.isEmpty() && !confirm.equals(host.ui.text(newPassword))) {
+                    host.ui.showFieldError(confirmPassword, confirmError, "The new passwords don't match.");
+                } else {
+                    host.ui.clearFieldError(confirmPassword, confirmError);
+                }
+            }
+        });
+        dialog.setOnShowListener(shown -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String oldValue = host.ui.text(oldPassword);
+                    String newValue = host.ui.text(newPassword);
+                    String confirmValue = host.ui.text(confirmPassword);
+                    host.ui.clearFieldError(oldPassword, oldError);
+                    host.ui.clearFieldError(newPassword, newError);
+                    host.ui.clearFieldError(confirmPassword, confirmError);
+                    generalError.setVisibility(View.GONE);
+                    boolean valid = true;
+                    if (oldValue.isEmpty()) {
+                        host.ui.showFieldError(oldPassword, oldError, "Enter your current password.");
+                        valid = false;
+                    }
+                    if (!host.ui.isStrongPassword(newValue)) {
+                        host.ui.showFieldError(newPassword, newError,
+                                "Use 10+ characters with uppercase, lowercase, a number and a symbol.");
+                        valid = false;
+                    } else if (newValue.equals(oldValue)) {
+                        host.ui.showFieldError(newPassword, newError,
+                                "Choose a password different from your current password.");
+                        valid = false;
+                    }
+                    if (confirmValue.isEmpty()) {
+                        host.ui.showFieldError(confirmPassword, confirmError, "Re-enter the new password.");
+                        valid = false;
+                    } else if (!newValue.equals(confirmValue)) {
+                        host.ui.showFieldError(confirmPassword, confirmError, "The new passwords don't match.");
+                        valid = false;
+                    }
+                    if (!valid) return;
+                    Button update = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                    update.setEnabled(false);
+                    update.setText("Updating...");
+                    new AuthRepository().changePassword(oldValue, newValue, new AuthRepository.SimpleCallback() {
+                        @Override public void onOk() {
+                            dialog.dismiss();
+                            host.ui.showSimpleMessage("Password updated",
+                                    "Your CampusTrade password was changed on this account.");
+                        }
+                        @Override public void onBad(String message) {
+                            update.setEnabled(true);
+                            update.setText("Update password");
+                            String lower = message == null ? "" : message.toLowerCase(Locale.ROOT);
+                            if (lower.contains("current password") || lower.contains("incorrect")
+                                    || lower.contains("credential") || lower.contains("wrong")) {
+                                host.ui.showFieldError(oldPassword, oldError,
+                                        "Current password is incorrect.");
+                            } else {
+                                generalError.setText(message == null || message.isEmpty()
+                                        ? "Password didn't change. Try again." : message);
+                                generalError.setVisibility(View.VISIBLE);
+                            }
+                        }
+                    });
+                }));
+        dialog.setOnDismissListener(d -> {
+            oldPassword.setText("");
+            newPassword.setText("");
+            confirmPassword.setText("");
+        });
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        }
     }
 
     public void confirmLogout() {

@@ -172,6 +172,25 @@ public class MainUI {
         return field;
     }
 
+    TextView fieldError() {
+        TextView error = bodyText("", host.error, 11);
+        error.setVisibility(View.GONE);
+        error.setPadding(dp(4), dp(3), 0, 0);
+        return error;
+    }
+
+    void showFieldError(EditText field, TextView error, String message) {
+        field.setError(message);
+        error.setText(message);
+        error.setVisibility(View.VISIBLE);
+    }
+
+    void clearFieldError(EditText field, TextView error) {
+        field.setError(null);
+        error.setText("");
+        error.setVisibility(View.GONE);
+    }
+
     Spinner listingSelector(LinearLayout form, String title, String[] options) {
         TextView caption = label(title);
         caption.setPadding(0, dp(12), 0, dp(8));

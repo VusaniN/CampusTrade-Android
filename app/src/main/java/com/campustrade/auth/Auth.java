@@ -322,6 +322,138 @@ public class Auth {
         });
     }
 
+    /** In-app reset request form: current password, new password, then confirmation. */
+    private void showResetPasswordForm(final String email) {
+        if (host.isDestroyed() || host.isFinishing()) return;
+        LinearLayout form = host.ui.workflowForm();
+        form.addView(host.ui.bodyText("For " + email
+                        + ". Enter your current password first, then choose and confirm a new password. "
+                        + "If you don't know your current password, use the reset link in your email.",
+                host.muted, 11));
+        EditText currentPassword = host.ui.listingField(form, "Current password",
+                "Enter the password you use now",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        TextView currentError = host.ui.fieldError();
+        form.addView(currentError);
+        EditText newPassword = host.ui.listingField(form, "New password",
+                "10+ characters, with upper, lower, number and symbol",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        TextView newError = host.ui.fieldError();
+        form.addView(newError);
+        EditText confirmPassword = host.ui.listingField(form, "Re-enter new password",
+                "Type the new password again",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        TextView confirmError = host.ui.fieldError();
+        form.addView(confirmError);
+        TextView generalError = host.ui.fieldError();
+        form.addView(generalError);
+        ScrollView scroll = new ScrollView(host);
+        scroll.addView(form);
+        AlertDialog dialog = host.ui.dialog()
+                .setTitle("Set new password")
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Update password", null)
+                .create();
+        currentPassword.addTextChangedListener(new MainActivity.SimpleWatcher() {
+            @Override public void afterTextChanged(Editable s) {
+                host.ui.clearFieldError(currentPassword, currentError);
+                generalError.setVisibility(View.GONE);
+            }
+        });
+        newPassword.addTextChangedListener(new MainActivity.SimpleWatcher() {
+            @Override public void afterTextChanged(Editable s) {
+                host.ui.clearFieldError(newPassword, newError);
+                if (!host.ui.text(confirmPassword).isEmpty()
+                        && !host.ui.text(confirmPassword).equals(s.toString())) {
+                    host.ui.showFieldError(confirmPassword, confirmError, "The new passwords don't match.");
+                } else {
+                    host.ui.clearFieldError(confirmPassword, confirmError);
+                }
+            }
+        });
+        confirmPassword.addTextChangedListener(new MainActivity.SimpleWatcher() {
+            @Override public void afterTextChanged(Editable s) {
+                String confirm = s.toString();
+                if (!confirm.isEmpty() && !confirm.equals(host.ui.text(newPassword))) {
+                    host.ui.showFieldError(confirmPassword, confirmError, "The new passwords don't match.");
+                } else {
+                    host.ui.clearFieldError(confirmPassword, confirmError);
+                }
+            }
+        });
+        dialog.setOnShowListener(shown -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String currentValue = host.ui.text(currentPassword);
+                    String newValue = host.ui.text(newPassword);
+                    String confirmValue = host.ui.text(confirmPassword);
+                    host.ui.clearFieldError(currentPassword, currentError);
+                    host.ui.clearFieldError(newPassword, newError);
+                    host.ui.clearFieldError(confirmPassword, confirmError);
+                    generalError.setVisibility(View.GONE);
+                    boolean valid = true;
+                    if (currentValue.isEmpty()) {
+                        host.ui.showFieldError(currentPassword, currentError, "Enter your current password.");
+                        valid = false;
+                    }
+                    if (!host.ui.isStrongPassword(newValue)) {
+                        host.ui.showFieldError(newPassword, newError,
+                                "Use 10+ characters with uppercase, lowercase, a number and a symbol.");
+                        valid = false;
+                    } else if (newValue.equals(currentValue)) {
+                        host.ui.showFieldError(newPassword, newError,
+                                "Choose a password different from your current password.");
+                        valid = false;
+                    }
+                    if (confirmValue.isEmpty()) {
+                        host.ui.showFieldError(confirmPassword, confirmError, "Re-enter the new password.");
+                        valid = false;
+                    } else if (!newValue.equals(confirmValue)) {
+                        host.ui.showFieldError(confirmPassword, confirmError, "The new passwords don't match.");
+                        valid = false;
+                    }
+                    if (!valid) return;
+                    Button update = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                    update.setEnabled(false);
+                    update.setText("Updating...");
+                    new AuthRepository().resetPasswordWithCurrent(email, currentValue, newValue,
+                            new AuthRepository.SimpleCallback() {
+                                @Override public void onOk() {
+                                    dialog.dismiss();
+                                    if (host.emailInput != null) host.emailInput.setText(email);
+                                    host.ui.showSimpleMessage("Password updated",
+                                            "Your password was changed. Log in with the new password.");
+                                }
+                                @Override public void onBad(String message) {
+                                    update.setEnabled(true);
+                                    update.setText("Update password");
+                                    String lower = message == null ? ""
+                                            : message.toLowerCase(java.util.Locale.ROOT);
+                                    if (lower.contains("current password") || lower.contains("incorrect")
+                                            || lower.contains("credential") || lower.contains("wrong")) {
+                                        host.ui.showFieldError(currentPassword, currentError,
+                                                "Current password is incorrect.");
+                                        currentPassword.requestFocus();
+                                    } else {
+                                        generalError.setText(message == null || message.isEmpty()
+                                                ? "Password didn't change. Try again." : message);
+                                        generalError.setVisibility(View.VISIBLE);
+                                    }
+                                }
+                            });
+                }));
+        dialog.setOnDismissListener(d -> {
+            currentPassword.setText("");
+            newPassword.setText("");
+            confirmPassword.setText("");
+        });
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(
+                    android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        }
+    }
+
     /** The reset window is five minutes. Resend is always one tap away. */
     private void showLinkCountdown(final String email, final int seconds, final boolean verification) {
         final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -343,7 +475,7 @@ public class Auth {
                         : "If " + email + " is registered, a reset link is on its way. "
                         + "Check your inbox and spam folder.\n\nThe link window closes in "
                         + String.format(java.util.Locale.ROOT, "%d:%02d", minutes, secs)
-                        + ". Use Resend whenever you need a fresh one.";
+                        + ". Use Resend for a fresh link, or Set new password to update it in the app.";
                 holder[0].setTitle(title);
                 holder[0].setMessage(body);
                 if (verification) {
@@ -384,8 +516,12 @@ public class Auth {
                 .setPositiveButton(verification ? "I've verified" : "Close", null)
                 .setNegativeButton(verification ? "Close" : "Resend",
                         verification ? null : (d, which) -> sendResetEmail(email))
-                .setNeutralButton(verification ? "Resend now" : null,
-                        verification ? (d, which) -> resendVerificationNow(email) : null)
+                .setNeutralButton(verification ? "Resend now" : "Set new password",
+                        verification ? (d, which) -> resendVerificationNow(email)
+                                : (d, which) -> {
+                                    d.dismiss();
+                                    showResetPasswordForm(email);
+                                })
                 .create();
         holder[0] = dialog;
         dialog.setOnShowListener(d -> {

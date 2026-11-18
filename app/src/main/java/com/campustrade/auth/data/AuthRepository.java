@@ -193,6 +193,71 @@ public class AuthRepository {
         return "The password couldn't be changed. Try again.";
     }
 
+    /** Reset form on the login screen: prove the current password, then set a new one. */
+    public void resetPasswordWithCurrent(String email, String oldPassword, String newPassword, SimpleCallback cb) {
+        String cleanEmail = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
+        if (cleanEmail.isEmpty()) {
+            cb.onBad("Enter your student email.");
+            return;
+        }
+        if (oldPassword == null || oldPassword.isEmpty()) {
+            cb.onBad("Enter your current password.");
+            return;
+        }
+        if (newPassword == null || newPassword.length() < 10) {
+            cb.onBad("Use a new password with at least 10 characters.");
+            return;
+        }
+        FirebaseUser current = auth.getCurrentUser();
+        if (current != null && current.getEmail() != null
+                && current.getEmail().equalsIgnoreCase(cleanEmail)) {
+            com.google.firebase.auth.AuthCredential credential =
+                    EmailAuthProvider.getCredential(current.getEmail(), oldPassword);
+            current.reauthenticate(credential)
+                    .addOnSuccessListener(v -> current.updatePassword(newPassword)
+                            .addOnSuccessListener(done -> cb.onOk())
+                            .addOnFailureListener(e -> cb.onBad(passwordFriendly(e))))
+                    .addOnFailureListener(e -> cb.onBad("Current password is incorrect."));
+            return;
+        }
+        auth.signInWithEmailAndPassword(cleanEmail, oldPassword)
+                .addOnSuccessListener(result -> {
+                    FirebaseUser user = result.getUser();
+                    if (user == null) {
+                        cb.onBad("Current password is incorrect.");
+                        return;
+                    }
+                    user.updatePassword(newPassword)
+                            .addOnSuccessListener(done -> {
+                                auth.signOut();
+                                cb.onOk();
+                            })
+                            .addOnFailureListener(e -> {
+                                auth.signOut();
+                                cb.onBad(passwordFriendly(e));
+                            });
+                })
+                .addOnFailureListener(e -> cb.onBad(signInPasswordFriendly(e)));
+    }
+
+    private String signInPasswordFriendly(Exception e) {
+        String code = "";
+        if (e instanceof com.google.firebase.auth.FirebaseAuthException) {
+            code = ((com.google.firebase.auth.FirebaseAuthException) e).getErrorCode();
+        }
+        if ("ERROR_INVALID_CREDENTIAL".equals(code) || "ERROR_WRONG_PASSWORD".equals(code)
+                || "ERROR_USER_NOT_FOUND".equals(code)) {
+            return "Current password is incorrect.";
+        }
+        if ("ERROR_NETWORK_REQUEST_FAILED".equals(code)) {
+            return "No connection. Check the internet and try again.";
+        }
+        if ("ERROR_TOO_MANY_REQUESTS".equals(code)) {
+            return "Too many attempts. Try again in a few minutes.";
+        }
+        return "Couldn't verify the current password. Try again.";
+    }
+
     /** File an appeal from a suspended login before it is signed out. */
     public void submitAppeal(String uid, String email, String name, String reason, SimpleCallback cb) {
         if (uid == null || uid.isEmpty()) {
