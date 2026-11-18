@@ -26,6 +26,7 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.content.res.ColorStateList;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -937,7 +938,20 @@ public class MainActivity extends Activity {
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.setPadding(0, 0, ui.dp(12), 0);
         if (currentTab.equals("Home")) {
-            copy.addView(ui.wordmark());
+            LinearLayout brand = ui.horizontal();
+            brand.setGravity(Gravity.CENTER_VERTICAL);
+            ImageView mark = new ImageView(this);
+            mark.setImageResource(R.drawable.campustrade_mark);
+            mark.setColorFilter(text);
+            mark.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            mark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            brand.addView(mark, new LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)));
+            TextView name = ui.wordmark();
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            nameParams.leftMargin = ui.dp(8);
+            brand.addView(name, nameParams);
+            copy.addView(brand);
         } else {
             TextView heading = ui.titleText(title, text, 28);
             if (Build.VERSION.SDK_INT >= 26) {
