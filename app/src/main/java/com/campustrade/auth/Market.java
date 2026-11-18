@@ -527,8 +527,8 @@ public class Market {
         stepDetails.addView(addPhotos, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48)));
 
         listingSection(stepDetails, "Document (optional)");
-        stepDetails.addView(host.ui.bodyText("One PDF, Word, PowerPoint, RTF or TXT file up to 10 MB. "
-                + "Anyone who can view the listing can open it, so leave out personal documents.", host.muted, 12));
+        stepDetails.addView(host.ui.bodyText("One PDF, Word, PowerPoint, RTF or TXT file up to 10 MB.",
+                host.muted, 12));
         host.listingDocumentContainer = new LinearLayout(host);
         host.listingDocumentContainer.setOrientation(LinearLayout.VERTICAL);
         host.listingDocumentContainer.setPadding(0, host.ui.dp(12), 0, 0);
@@ -1071,8 +1071,8 @@ public class Market {
         form.addView(addPhotos, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48)));
 
         listingSection(form, "Document (optional)");
-        form.addView(host.ui.bodyText("Attach one PDF, Word, PowerPoint, RTF or TXT file up to 10 MB. "
-                + "The file is shared with anyone who can view the listing, so don't add personal documents.", host.muted, 12));
+        form.addView(host.ui.bodyText("Attach one PDF, Word, PowerPoint, RTF or TXT file up to 10 MB.",
+                host.muted, 12));
         host.listingDocumentContainer = new LinearLayout(host);
         host.listingDocumentContainer.setOrientation(LinearLayout.VERTICAL);
         host.listingDocumentContainer.setPadding(0, host.ui.dp(12), 0, 0);
@@ -2496,12 +2496,14 @@ public class Market {
                     repo.createWithId(product.id, uid, host.currentStudentName, product.title,
                             product.description, priceValue, product.category, product.condition,
                             product.specs, product.location, product.delivery, "AVAILABLE", finalImage, finalUrls,
-                            finalDocumentUrl, finalDocumentName, finalDocumentMime, finalDocumentSize,
+                            "", finalDocumentName, finalDocumentMime, finalDocumentSize,
                             product.quantity, new ListingRepository.IdCallback() {
                                 @Override public void onOk(String docId) {
                                     CloudSync.putRemoteId(host, product.id, docId);
                                     CloudSync.directoryPut(host, uid, host.currentStudentEmail);
                                     rememberUploadedDocument(product, finalDocumentUrl);
+                                    savePrivateListingDocument(docId, finalDocumentUrl,
+                                            finalDocumentName, finalDocumentMime, finalDocumentSize);
                                     java.util.Map<String, Object> extra = new java.util.HashMap<>();
                                     extra.put("negotiable", product.negotiable);
                                     extra.put("quantity", Math.max(0, product.quantity));
@@ -2543,7 +2545,7 @@ public class Market {
                     if (!finalUrls.isEmpty()) {
                         fields.put("photos", finalUrls);
                     }
-                    fields.put("documentURL", finalDocumentUrl);
+                    fields.put("documentURL", "");
                     fields.put("documentName", finalDocumentName);
                     fields.put("documentMime", finalDocumentMime);
                     fields.put("documentSize", finalDocumentSize);
@@ -2555,7 +2557,11 @@ public class Market {
                             new com.google.firebase.Timestamp(new Date(expiryTime(product))));
                     fields.put("updatedAt", com.google.firebase.firestore.FieldValue.serverTimestamp());
                     repo.update(docId, fields, new ListingRepository.DoneCallback() {
-                        @Override public void onOk() { rememberUploadedDocument(product, finalDocumentUrl); }
+                        @Override public void onOk() {
+                            rememberUploadedDocument(product, finalDocumentUrl);
+                            savePrivateListingDocument(docId, finalDocumentUrl,
+                                    finalDocumentName, finalDocumentMime, finalDocumentSize);
+                        }
                         @Override public void onBad(String message) {
                             host.ui.showCloudRetry("Listing saved on this device",
                                     "The marketplace copy failed: " + message,
@@ -2573,6 +2579,31 @@ public class Market {
         }
         product.documentDirty = false;
         saveProducts();
+    }
+
+    private void savePrivateListingDocument(String listingId, String url, String name,
+                                            String mime, long size) {
+        if (listingId == null || listingId.isEmpty()) return;
+        com.google.firebase.firestore.DocumentReference doc = com.google.firebase.firestore
+                .FirebaseFirestore.getInstance().collection("listingDocuments").document(listingId);
+        if (url == null || url.isEmpty()) {
+            doc.delete().addOnFailureListener(e -> android.util.Log.w("CampusTrade",
+                    "private document delete failed: " + e.getMessage()));
+            return;
+        }
+        String safeName = name == null ? "" : name;
+        if (safeName.length() > 255) safeName = safeName.substring(0, 255);
+        String safeMime = mime == null ? "" : mime;
+        if (safeMime.length() > 100) safeMime = safeMime.substring(0, 100);
+        java.util.Map<String, Object> fields = new java.util.HashMap<>();
+        fields.put("sellerID", CloudSync.uid(host));
+        fields.put("documentURL", url);
+        fields.put("documentName", safeName);
+        fields.put("documentMime", safeMime);
+        fields.put("documentSize", Math.max(0, size));
+        fields.put("updatedAt", com.google.firebase.firestore.FieldValue.serverTimestamp());
+        doc.set(fields).addOnFailureListener(e -> android.util.Log.w("CampusTrade",
+                "private document save failed: " + e.getMessage()));
     }
 
     /** Copy a status change or delete to Firebase. */
@@ -3020,9 +3051,12 @@ public class Market {
                 && !item.getImageURL().isEmpty()) {
             product.photos.add(Uri.parse(item.getImageURL()));
         }
-        if (item.getDocumentURL() != null && !item.getDocumentURL().isEmpty()) {
-            product.documentUrl = item.getDocumentURL();
-            product.documentUri = Uri.parse(item.getDocumentURL());
+        if ((item.getDocumentURL() != null && !item.getDocumentURL().isEmpty())
+                || (item.getDocumentName() != null && !item.getDocumentName().isEmpty())) {
+            if (item.getDocumentURL() != null && !item.getDocumentURL().isEmpty()) {
+                product.documentUrl = item.getDocumentURL();
+                product.documentUri = Uri.parse(item.getDocumentURL());
+            }
             product.documentName = item.getDocumentName() == null ? "" : item.getDocumentName();
             product.documentMime = item.getDocumentMime() == null ? "" : item.getDocumentMime();
             product.documentSize = item.getDocumentSize();
@@ -3169,8 +3203,9 @@ public class Market {
                 details.addView(host.ui.bodyText("Agreed price: R" + cardReservation.amount, host.blue, 10));
             }
             if (!grid && product.hasDocument()) {
-                TextView document = host.ui.bodyText("Document: " + (product.documentName.isEmpty()
-                        ? "attached" : product.documentName), host.muted, 11);
+                boolean documentVisible = ownsListing(product) || buyerCanOpenDocument(product);
+                TextView document = host.ui.bodyText(documentVisible && !product.documentName.isEmpty()
+                        ? "Document: " + product.documentName : "Document included", host.muted, 11);
                 document.setMaxLines(1);
                 document.setEllipsize(TextUtils.TruncateAt.MIDDLE);
                 details.addView(document);
@@ -3366,6 +3401,8 @@ public class Market {
                 + "\n" + (product.viewCount + " views / " + product.favouriteCount + " saves"), host.muted, 12));
 
         if (product.hasDocument()) {
+            MainActivity.TransactionRecord documentOrder = buyerDocumentOrder(product);
+            boolean canOpen = ownsListing(product) || documentOrder != null;
             LinearLayout document = host.ui.horizontal();
             document.setGravity(Gravity.CENTER_VERTICAL);
             document.setPadding(host.ui.dp(12), host.ui.dp(12), host.ui.dp(12), host.ui.dp(12));
@@ -3379,17 +3416,24 @@ public class Market {
             LinearLayout copy = new LinearLayout(host);
             copy.setOrientation(LinearLayout.VERTICAL);
             copy.setPadding(host.ui.dp(10), 0, 0, 0);
-            TextView documentName = host.ui.titleText(product.documentName.isEmpty() ? "Attached document" : product.documentName, host.text, 12);
+            String documentTitle = canOpen
+                    ? (product.documentName.isEmpty() ? "Attached document" : product.documentName)
+                    : "Document included";
+            TextView documentName = host.ui.titleText(documentTitle, host.text, 12);
             documentName.setMaxLines(2);
             copy.addView(documentName);
-            copy.addView(host.ui.bodyText(documentTypeLabel(product.documentMime, product.documentName)
-                    + " / " + formatDocumentSize(product.documentSize), host.muted, 10));
+            copy.addView(host.ui.bodyText(canOpen
+                    ? documentTypeLabel(product.documentMime, product.documentName)
+                        + " / " + formatDocumentSize(product.documentSize)
+                    : "Available after the seller confirms your payment", host.muted, 10));
             document.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            TextView open = host.ui.linkText("Open");
-            open.setTextSize(12);
-            open.setOnClickListener(v -> openProductDocument(product));
-            document.addView(open);
-            document.setOnClickListener(v -> openProductDocument(product));
+            if (canOpen) {
+                TextView open = host.ui.linkText("Open");
+                open.setTextSize(12);
+                open.setOnClickListener(v -> openProductDocument(product));
+                document.addView(open);
+                document.setOnClickListener(v -> openProductDocument(product));
+            }
             content.addView(document, documentParams);
         }
 
@@ -3549,6 +3593,8 @@ public class Market {
                 card.addView(photos);
             }
             if (product.hasDocument()) {
+                MainActivity.TransactionRecord documentOrder = buyerDocumentOrder(product);
+                boolean canOpen = ownsListing(product) || documentOrder != null;
                 LinearLayout document = host.ui.horizontal();
                 document.setGravity(Gravity.CENTER_VERTICAL);
                 document.setPadding(host.ui.dp(12), host.ui.dp(12), host.ui.dp(12), host.ui.dp(12));
@@ -3564,20 +3610,24 @@ public class Market {
                 LinearLayout copy = new LinearLayout(host);
                 copy.setOrientation(LinearLayout.VERTICAL);
                 copy.setPadding(host.ui.dp(10), 0, host.ui.dp(8), 0);
-                TextView documentName = host.ui.titleText(product.documentName.isEmpty()
-                        ? "Attached document" : product.documentName, host.text, 13);
+                TextView documentName = host.ui.titleText(canOpen
+                        ? (product.documentName.isEmpty() ? "Attached document" : product.documentName)
+                        : "Document included", host.text, 13);
                 documentName.setMaxLines(2);
                 documentName.setEllipsize(TextUtils.TruncateAt.END);
                 copy.addView(documentName);
-                String state = product.documentUrl.isEmpty() ? "Attached locally" : "Shared with listing";
-                copy.addView(host.ui.bodyText(documentTypeLabel(product.documentMime, product.documentName)
-                        + " / " + formatDocumentSize(product.documentSize) + " / " + state, host.muted, 10));
+                copy.addView(host.ui.bodyText(canOpen
+                        ? documentTypeLabel(product.documentMime, product.documentName)
+                            + " / " + formatDocumentSize(product.documentSize)
+                        : "Available after the seller confirms your payment", host.muted, 10));
                 document.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-                TextView open = host.ui.actionChip("Open");
-                open.setOnClickListener(v -> openProductDocument(product));
-                document.addView(open, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, host.ui.dp(48)));
-                document.setOnClickListener(v -> openProductDocument(product));
+                if (canOpen) {
+                    TextView open = host.ui.actionChip("Open");
+                    open.setOnClickListener(v -> openProductDocument(product));
+                    document.addView(open, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, host.ui.dp(48)));
+                    document.setOnClickListener(v -> openProductDocument(product));
+                }
                 card.addView(document, documentParams);
             }
             card.addView(host.ui.titleText("R " + product.price, host.blue, 22));
@@ -3646,15 +3696,76 @@ public class Market {
             host.ui.addPageClose(details);
     }
 
+    public MainActivity.TransactionRecord buyerDocumentOrder(MainActivity.Product product) {
+        if (product == null || product.id == null) return null;
+        for (MainActivity.TransactionRecord order : host.transactions) {
+            if (order == null || order.status == null || order.productId == null) continue;
+            if (!order.productId.equals(product.id)) continue;
+            if (!order.isBuyer(host.currentStudentEmail)) continue;
+            if (!order.status.equals(MainActivity.TransactionRecord.HELD)
+                    && !order.status.equals(MainActivity.TransactionRecord.COMPLETED)) continue;
+            if (!order.hasDocument() || !order.paymentConfirmed()) continue;
+            return order;
+        }
+        return null;
+    }
+
+    public boolean buyerCanOpenDocument(MainActivity.Product product) {
+        return buyerDocumentOrder(product) != null;
+    }
+
     public void openProductDocument(MainActivity.Product product) {
-        Uri uri = product.documentUrl != null && !product.documentUrl.isEmpty()
-                ? Uri.parse(product.documentUrl) : product.documentUri;
+        if (ownsListing(product)) {
+            if (product.documentUri != null) {
+                openDocumentUri(product.documentUri, product.documentMime);
+                return;
+            }
+            if (product.documentUrl != null && !product.documentUrl.isEmpty()) {
+                openDocumentUri(Uri.parse(product.documentUrl), product.documentMime);
+                return;
+            }
+            fetchPrivateListingDocument(product);
+            return;
+        }
+        MainActivity.TransactionRecord order = buyerDocumentOrder(product);
+        if (order != null) {
+            openDocumentUri(Uri.parse(order.documentUrl), order.documentMime);
+            return;
+        }
+        Toast.makeText(host, "The document is available after the seller confirms your payment.",
+                Toast.LENGTH_LONG).show();
+    }
+
+    private void fetchPrivateListingDocument(MainActivity.Product product) {
+        if (product == null || product.id == null || product.id.isEmpty()) return;
+        String listingId = CloudSync.remoteId(host, product.id);
+        if (listingId.isEmpty()) listingId = product.id;
+        com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("listingDocuments")
+                .document(listingId).get()
+                .addOnSuccessListener(doc -> {
+                    String url = doc.exists() ? doc.getString("documentURL") : "";
+                    if (url == null || url.isEmpty()) {
+                        Toast.makeText(host, "This listing has no attached document.",
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    product.documentUrl = url;
+                    String name = doc.getString("documentName");
+                    String mime = doc.getString("documentMime");
+                    if (name != null) product.documentName = name;
+                    if (mime != null) product.documentMime = mime;
+                    openDocumentUri(Uri.parse(url), product.documentMime);
+                })
+                .addOnFailureListener(e -> Toast.makeText(host,
+                        "Could not open the private document.", Toast.LENGTH_SHORT).show());
+    }
+
+    private void openDocumentUri(Uri uri, String mimeType) {
         if (uri == null) {
             Toast.makeText(host, "This listing has no attached document.", Toast.LENGTH_SHORT).show();
             return;
         }
-        String mime = product.documentMime == null || product.documentMime.trim().isEmpty()
-                ? "*/*" : product.documentMime;
+        String mime = mimeType == null || mimeType.trim().isEmpty() ? "*/*" : mimeType;
         Intent view = new Intent(Intent.ACTION_VIEW);
         view.setDataAndType(uri, mime);
         view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);

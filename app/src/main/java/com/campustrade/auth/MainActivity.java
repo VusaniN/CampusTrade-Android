@@ -2002,7 +2002,8 @@ public class MainActivity extends Activity {
         }
 
         boolean hasDocument() {
-            return documentUri != null || (documentUrl != null && !documentUrl.isEmpty());
+            return documentUri != null || (documentUrl != null && !documentUrl.isEmpty())
+                    || (documentName != null && !documentName.trim().isEmpty());
         }
     }
 
@@ -2097,6 +2098,30 @@ public class MainActivity extends Activity {
         long sellerVerifiedTime = 0;
         String invoiceNumber = "";
         long invoiceFinalizedAt = 0;
+        String documentUrl = "";
+        String documentName = "";
+        String documentMime = "";
+        long documentSize = 0;
+        boolean digitalOrder = false;
+        long paymentReceivedAt = 0;
+        String paymentReceivedBy = "";
+
+        boolean hasDocument() {
+            return documentUrl != null && !documentUrl.isEmpty();
+        }
+
+        boolean paymentRequired() {
+            return value().signum() > 0;
+        }
+
+        boolean paymentConfirmed() {
+            return !paymentRequired() || paymentReceivedAt > 0;
+        }
+
+        boolean documentReleased() {
+            return hasDocument() && paymentConfirmed()
+                    && (status.equals(HELD) || status.equals(COMPLETED));
+        }
 
         TransactionRecord(String id, String itemTitle, String amount, String method, String buyerName, String buyerPhone,
                 String reference, String paidAt, String sellerEmail, String buyerEmail, String category, String status) {
@@ -2187,6 +2212,7 @@ public class MainActivity extends Activity {
         // order, after reviewing that photo.
         boolean submitCollectionProof(String email, String photoUrl, long now) {
             if (!isBuyer(email) || !status.equals(HELD) || cancellationPending()
+                    || digitalOrder
                     || photoUrl == null || photoUrl.trim().isEmpty()) return false;
             collectionPhotoUrl = photoUrl.trim();
             collectionPhotoBy = buyerEmail;
@@ -2197,7 +2223,34 @@ public class MainActivity extends Activity {
         }
         boolean verifyCollectionBySeller(String email, long now, String invoice) {
             if (!isSeller(email) || !status.equals(HELD) || cancellationPending()
-                    || !hasCollectionProof() || !collectionPhotoBy.equalsIgnoreCase(buyerEmail)) return false;
+                    || digitalOrder || !hasCollectionProof()
+                    || !collectionPhotoBy.equalsIgnoreCase(buyerEmail)) return false;
+            status = COMPLETED;
+            sellerVerifiedBy = sellerEmail;
+            sellerVerifiedTime = now;
+            clearSharedLocations();
+            if (invoiceNumber == null || invoiceNumber.trim().isEmpty()) {
+                invoiceNumber = invoice == null ? "" : invoice.trim();
+            }
+            if (invoiceFinalizedAt <= 0) invoiceFinalizedAt = now;
+            return true;
+        }
+
+        boolean confirmPaymentBySeller(String email, long now) {
+            if (!isSeller(email) || !status.equals(HELD) || cancellationPending()
+                    || !paymentRequired() || paymentReceivedAt > 0) return false;
+            paymentReceivedAt = now;
+            paymentReceivedBy = sellerEmail;
+            return true;
+        }
+
+        boolean confirmDigitalPaymentBySeller(String email, long now, String invoice) {
+            if (!isSeller(email) || !status.equals(HELD) || cancellationPending()
+                    || !digitalOrder) return false;
+            if (paymentRequired() && paymentReceivedAt <= 0) {
+                paymentReceivedAt = now;
+                paymentReceivedBy = sellerEmail;
+            }
             status = COMPLETED;
             sellerVerifiedBy = sellerEmail;
             sellerVerifiedTime = now;

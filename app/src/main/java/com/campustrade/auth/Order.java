@@ -454,6 +454,16 @@ public class Order {
             String cloudInvoice = doc.getString("invoiceNumber") == null ? "" : doc.getString("invoiceNumber");
             Long invoiceTime = doc.getLong("invoiceFinalizedAt");
             long cloudInvoiceTime = invoiceTime == null ? 0 : invoiceTime;
+            String cloudDocumentUrl = doc.getString("documentURL") == null ? "" : doc.getString("documentURL");
+            String cloudDocumentName = doc.getString("documentName") == null ? "" : doc.getString("documentName");
+            String cloudDocumentMime = doc.getString("documentMime") == null ? "" : doc.getString("documentMime");
+            Long documentSize = doc.getLong("documentSize");
+            long cloudDocumentSize = documentSize == null ? 0 : documentSize;
+            boolean cloudDigital = Boolean.TRUE.equals(doc.getBoolean("digitalOrder"));
+            Long paymentTime = doc.getLong("paymentReceivedAt");
+            long cloudPaymentAt = paymentTime == null ? 0 : paymentTime;
+            String cloudPaymentBy = doc.getString("paymentReceivedBy") == null
+                    ? "" : doc.getString("paymentReceivedBy");
             boolean payoutChanged = cloudPayout > 0 && (
                     order.payoutRequestedAt != cloudPayout
                     || (cloudPayoutMethod != null && !cloudPayoutMethod.equals(order.payoutMethod))
@@ -477,10 +487,20 @@ public class Order {
             boolean verifiedChanged = cloudVerifiedTime > order.sellerVerifiedTime;
             boolean invoiceChanged = cloudInvoiceTime > order.invoiceFinalizedAt
                     || (!cloudInvoice.isEmpty() && !cloudInvoice.equals(order.invoiceNumber));
+            boolean documentChanged = !cloudDocumentUrl.isEmpty() && (
+                    !cloudDocumentUrl.equals(order.documentUrl)
+                    || !cloudDocumentName.equals(order.documentName)
+                    || !cloudDocumentMime.equals(order.documentMime)
+                    || cloudDocumentSize != order.documentSize);
+            boolean digitalChanged = cloudDigital != order.digitalOrder;
+            boolean paymentChanged = cloudPaymentAt > 0
+                    && (cloudPaymentAt != order.paymentReceivedAt
+                    || !cloudPaymentBy.equals(order.paymentReceivedBy));
             // Only update local orders that actually changed.
             if (!statusChanged && !requestChanged && !returnChanged && !payoutChanged
                     && !deliveryChanged && !locationChanged && !proofChanged
-                    && !verifiedChanged && !invoiceChanged) return;
+                    && !verifiedChanged && !invoiceChanged && !documentChanged
+                    && !digitalChanged && !paymentChanged) return;
             // Requests only move forward; an old read must not undo a local decision.
             if (order.status.equals(MainActivity.TransactionRecord.HELD) && cloudStatus.equals(MainActivity.TransactionRecord.REQUESTED)) return;
             if (order.status.equals(MainActivity.TransactionRecord.COMPLETED) && !cloudStatus.equals(MainActivity.TransactionRecord.COMPLETED)) return;
@@ -527,6 +547,17 @@ public class Order {
             }
             if (!cloudInvoice.isEmpty()) order.invoiceNumber = cloudInvoice;
             if (cloudInvoiceTime > 0) order.invoiceFinalizedAt = cloudInvoiceTime;
+            if (!cloudDocumentUrl.isEmpty()) {
+                order.documentUrl = cloudDocumentUrl;
+                order.documentName = cloudDocumentName;
+                order.documentMime = cloudDocumentMime;
+                order.documentSize = cloudDocumentSize;
+            }
+            order.digitalOrder = cloudDigital;
+            if (cloudPaymentAt > 0) {
+                order.paymentReceivedAt = cloudPaymentAt;
+                order.paymentReceivedBy = cloudPaymentBy;
+            }
             host.ordersPulledChanged = true;
             if (statusChanged) {
                 syncListingFor(order);
@@ -539,6 +570,8 @@ public class Order {
                 notifyCollectionProofChange(order);
             } else if (verifiedChanged && oldVerified <= 0) {
                 notifyCollectionVerified(order);
+            } else if (paymentChanged) {
+                notifyPaymentConfirmed(order);
             }
             return;
         }
@@ -630,6 +663,16 @@ public class Order {
         record.invoiceNumber = doc.getString("invoiceNumber") == null ? "" : doc.getString("invoiceNumber");
         Long invoiceTime = doc.getLong("invoiceFinalizedAt");
         record.invoiceFinalizedAt = invoiceTime == null ? 0 : invoiceTime;
+        record.documentUrl = doc.getString("documentURL") == null ? "" : doc.getString("documentURL");
+        record.documentName = doc.getString("documentName") == null ? "" : doc.getString("documentName");
+        record.documentMime = doc.getString("documentMime") == null ? "" : doc.getString("documentMime");
+        Long documentSize = doc.getLong("documentSize");
+        record.documentSize = documentSize == null ? 0 : documentSize;
+        record.digitalOrder = Boolean.TRUE.equals(doc.getBoolean("digitalOrder"));
+        Long paymentTime = doc.getLong("paymentReceivedAt");
+        record.paymentReceivedAt = paymentTime == null ? 0 : paymentTime;
+        record.paymentReceivedBy = doc.getString("paymentReceivedBy") == null
+                ? "" : doc.getString("paymentReceivedBy");
         host.transactions.add(record);
         host.inbox.markMarketplaceChat(record.isBuyer(host.currentStudentEmail)
                 ? record.sellerEmail : record.buyerEmail);
@@ -725,13 +768,21 @@ public class Order {
                 title = "Order cancelled";
             }
         } else if (order.status.equals(MainActivity.TransactionRecord.COMPLETED)) {
-            title = order.isBuyer(host.currentStudentEmail) ? "Collection verified" : "Order completed";
+            title = order.digitalOrder
+                    ? (order.isBuyer(host.currentStudentEmail) ? "Digital order complete" : "Digital order completed")
+                    : (order.isBuyer(host.currentStudentEmail) ? "Collection verified" : "Order completed");
         } else {
             return;
         }
         String body;
-        if (order.status.equals(MainActivity.TransactionRecord.HELD)) {
-            body = order.itemTitle + " is confirmed. Arrange collection.";
+        if (order.digitalOrder && order.status.equals(MainActivity.TransactionRecord.COMPLETED)) {
+            body = order.isBuyer(host.currentStudentEmail)
+                    ? order.itemTitle + " - payment confirmed. Your document is unlocked. Invoice ready."
+                    : order.itemTitle + " - payment confirmed and document released.";
+        } else if (order.status.equals(MainActivity.TransactionRecord.HELD)) {
+            body = order.digitalOrder
+                    ? order.itemTitle + " is confirmed. Waiting for the seller to confirm payment."
+                    : order.itemTitle + " is confirmed. Arrange collection.";
         } else if (order.status.equals(MainActivity.TransactionRecord.COMPLETED)) {
             body = order.isBuyer(host.currentStudentEmail)
                     ? order.itemTitle + " · seller verified your collection photo. Invoice ready."
@@ -746,6 +797,17 @@ public class Order {
         } else {
             body = order.itemTitle + " is cancelled.";
         }
+        host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "", order.id);
+        host.notification.showCampusNotification(title, body, "payment", "", order.id);
+    }
+
+    /** Tell the buyer that the seller confirmed the money arrived. */
+    public void notifyPaymentConfirmed(MainActivity.TransactionRecord order) {
+        if (!order.isBuyer(host.currentStudentEmail) || order.paymentReceivedAt <= 0) return;
+        String title = "Payment confirmed";
+        String body = order.hasDocument()
+                ? order.itemTitle + " — payment received. Your document is ready to open."
+                : order.itemTitle + " — payment received.";
         host.notification.addNotification(host.currentStudentEmail, title, body, "payment", "", order.id);
         host.notification.showCampusNotification(title, body, "payment", "", order.id);
     }
@@ -873,6 +935,7 @@ public class Order {
                 doc.put("category", order.category);
                 doc.put("deliveryMethod", order.deliveryMethod);
                 doc.put("deliveryAddress", order.deliveryAddress);
+                doc.put("digitalOrder", order.digitalOrder);
                 doc.put("status", "REQUESTED");
                 doc.put("createdAt", com.google.firebase.Timestamp.now());
                 com.google.firebase.firestore.FirebaseFirestore.getInstance()
@@ -902,6 +965,11 @@ public class Order {
 
     /** Send a status decision to Firebase. */
     public void cloudUpdateOrder(MainActivity.TransactionRecord order) {
+        cloudUpdateOrder(order, false);
+    }
+
+    /** Send a status decision to Firebase, optionally attaching the private document. */
+    public void cloudUpdateOrder(MainActivity.TransactionRecord order, boolean includeDocument) {
         java.util.Map<String, Object> update = new java.util.HashMap<>();
         update.put("status", cloudOrderStatus(order.status));
         update.put("updatedAt", com.google.firebase.Timestamp.now());
@@ -961,6 +1029,18 @@ public class Order {
             update.put("invoiceNumber", order.invoiceNumber);
             update.put("invoiceFinalizedAt", order.invoiceFinalizedAt);
         }
+        if (order.paymentReceivedAt > 0) {
+            update.put("paymentReceivedAt", order.paymentReceivedAt);
+            update.put("paymentReceivedBy", order.paymentReceivedBy);
+        }
+        // The private listing document is copied into the order only when the
+        // seller confirms the request. Other order updates must not resend it.
+        if (includeDocument && order.hasDocument()) {
+            update.put("documentURL", order.documentUrl);
+            update.put("documentName", order.documentName);
+            update.put("documentMime", order.documentMime);
+            update.put("documentSize", order.documentSize);
+        }
         com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("orders")
                 .document(order.id).update(update)
                 .addOnSuccessListener(unused -> {
@@ -974,7 +1054,7 @@ public class Order {
                     host.ui.showCloudRetry("Order saved on this device",
                             "The other student may not see this change until the cloud copy succeeds. "
                                     + e.getMessage(),
-                            () -> cloudUpdateOrder(order));
+                            () -> cloudUpdateOrder(order, includeDocument));
                 });
     }
 
@@ -1199,6 +1279,7 @@ public class Order {
                             method, buyer, phone, finalReference, paidAt, product.sellerEmail,
                             host.currentStudentEmail, product.category, MainActivity.TransactionRecord.REQUESTED, product.id);
                     order.sellerName = host.studentName(product.sellerEmail);
+                    order.digitalOrder = product.hasDocument();
                     order.deliveryMethod = fulfilment[0];
                     order.deliveryAddress = fulfilment[0].equals("Local delivery") ? deliveryAddress : "";
                     order.createdTime = System.currentTimeMillis();
@@ -2220,6 +2301,130 @@ public class Order {
     }
 
     // Order details use a full page; secondary actions use a sheet.
+    private String readableDocumentSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format(Locale.getDefault(), "%.1f KB", bytes / 1024.0);
+        return String.format(Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024.0));
+    }
+
+    private void openOrderDocument(MainActivity.TransactionRecord order) {
+        if (order.documentUrl == null || order.documentUrl.isEmpty()) {
+            Toast.makeText(host, "This order has no attached document.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Uri uri = Uri.parse(order.documentUrl);
+        String mime = order.documentMime == null || order.documentMime.trim().isEmpty()
+                ? "*/*" : order.documentMime;
+        Intent view = new Intent(Intent.ACTION_VIEW);
+        view.setDataAndType(uri, mime);
+        view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            host.startActivity(view);
+            return;
+        } catch (android.content.ActivityNotFoundException ignored) {
+            // Fall through to the share sheet.
+        }
+        Intent share = new Intent(Intent.ACTION_SEND);
+        share.setType("text/plain");
+        share.putExtra(Intent.EXTRA_TEXT, order.documentUrl);
+        try {
+            host.startActivity(Intent.createChooser(share, "Open document"));
+        } catch (android.content.ActivityNotFoundException e) {
+            host.ui.showSimpleMessage("Document", "No app on this device can open the file. Link: "
+                    + order.documentUrl);
+        }
+    }
+
+    private void downloadOrderDocument(MainActivity.TransactionRecord order) {
+        if (order.documentUrl == null || order.documentUrl.isEmpty()) {
+            Toast.makeText(host, "This order has no attached document.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String mime = order.documentMime == null || order.documentMime.trim().isEmpty()
+                ? "application/octet-stream" : order.documentMime.trim();
+        String name = order.documentName == null || order.documentName.trim().isEmpty()
+                ? "CampusTrade-document" : order.documentName.trim();
+        name = name.replaceAll("[\\\\/:*?\"<>|]", "_");
+        if (name.length() > 120) name = name.substring(0, 120);
+        if ("application/pdf".equalsIgnoreCase(mime) && !name.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+            name += ".pdf";
+        }
+        final String fileName = name;
+        final String mimeType = mime;
+        Toast.makeText(host, "Downloading " + fileName, Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                String location;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    android.content.ContentValues values = new android.content.ContentValues();
+                    values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                    values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                    values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                            android.os.Environment.DIRECTORY_DOWNLOADS + "/CampusTrade");
+                    values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+                    Uri target = host.getContentResolver().insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (target == null) throw new java.io.IOException("Could not create the download file");
+                    try (java.io.InputStream input = openDocumentStream(order.documentUrl);
+                         java.io.OutputStream output = host.getContentResolver().openOutputStream(target)) {
+                        if (output == null) throw new java.io.IOException("Could not open the download file");
+                        copyDocument(input, output);
+                    }
+                    values.clear();
+                    values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                    host.getContentResolver().update(target, values, null, null);
+                    location = "Downloads/CampusTrade/" + fileName;
+                } else {
+                    java.io.File directory = new java.io.File(
+                            host.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS),
+                            "CampusTrade");
+                    if (!directory.exists() && !directory.mkdirs()) {
+                        throw new java.io.IOException("Could not create the download folder");
+                    }
+                    java.io.File file = new java.io.File(directory, fileName);
+                    try (java.io.InputStream input = openDocumentStream(order.documentUrl);
+                         java.io.OutputStream output = new java.io.FileOutputStream(file)) {
+                        copyDocument(input, output);
+                    }
+                    location = file.getAbsolutePath();
+                }
+                final String savedLocation = location;
+                host.runOnUiThread(() -> Toast.makeText(host,
+                        "Saved to " + savedLocation, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                android.util.Log.w("CampusTrade", "document download failed: " + e.getMessage(), e);
+                host.runOnUiThread(() -> Toast.makeText(host,
+                        "Download failed: " + (e.getMessage() == null ? "try again" : e.getMessage()),
+                        Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private java.io.InputStream openDocumentStream(String url) throws java.io.IOException {
+        java.net.HttpURLConnection connection =
+                (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(30000);
+        connection.setInstanceFollowRedirects(true);
+        connection.setRequestProperty("User-Agent", "CampusTrade/1.0 (Android)");
+        int code = connection.getResponseCode();
+        if (code < 200 || code >= 300) {
+            connection.disconnect();
+            throw new java.io.IOException("server returned HTTP " + code);
+        }
+        return connection.getInputStream();
+    }
+
+    private void copyDocument(java.io.InputStream input, java.io.OutputStream output)
+            throws java.io.IOException {
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            output.write(buffer, 0, read);
+        }
+        output.flush();
+    }
+
     public void showOrderDetails(MainActivity.TransactionRecord order) {
         if (!order.isBuyer(host.currentStudentEmail) && !order.isSeller(host.currentStudentEmail)) return;
         if (currentOrderPage != null && currentOrderPage.isShowing()) {
@@ -2276,7 +2481,31 @@ public class Order {
             primary.setText("Approve purchase");
             primary.setOnClickListener(v -> { page.dismiss(); approvePurchaseRequest(order); });
         } else if (order.status.equals(MainActivity.TransactionRecord.HELD) && !order.cancellationPending()) {
-            if (buyer && !order.hasCollectionProof()) {
+            if (order.digitalOrder) {
+                if (buyer) {
+                    if (order.paymentConfirmed() && order.hasDocument()) {
+                        primary.setText("Open document");
+                        primary.setOnClickListener(v -> openOrderDocument(order));
+                    } else if (order.paymentConfirmed()) {
+                        primary.setText("Chat with seller");
+                        primary.setOnClickListener(v -> {
+                            page.dismiss();
+                            openOrderChat(order);
+                        });
+                    } else {
+                        primary.setText("Waiting for payment confirmation");
+                        primary.setOnClickListener(v -> Toast.makeText(host,
+                                "The seller releases the document after confirming your payment.",
+                                Toast.LENGTH_LONG).show());
+                    }
+                } else if (!order.paymentConfirmed()) {
+                    primary.setText("Confirm payment & release");
+                    primary.setOnClickListener(v -> confirmPaymentReceived(order));
+                } else {
+                    primary.setText("Complete digital order");
+                    primary.setOnClickListener(v -> confirmDigitalCompletion(order));
+                }
+            } else if (buyer && !order.hasCollectionProof()) {
                 primary.setText("Photograph collection");
                 primary.setOnClickListener(v -> promptCollectionPhoto(order));
             } else if (buyer) {
@@ -2299,8 +2528,13 @@ public class Order {
             primary.setText("Leave review");
             primary.setOnClickListener(v -> { page.dismiss(); reviewOrder(order); });
         } else if (order.status.equals(MainActivity.TransactionRecord.COMPLETED)) {
-            primary.setText("Share confirmation");
-            primary.setOnClickListener(v -> shareConfirmation(order));
+            if (order.digitalOrder && order.hasDocument() && order.paymentConfirmed()) {
+                primary.setText("Open document");
+                primary.setOnClickListener(v -> openOrderDocument(order));
+            } else {
+                primary.setText("Share confirmation");
+                primary.setOnClickListener(v -> shareConfirmation(order));
+            }
         } else if (order.status.equals(MainActivity.TransactionRecord.CANCELLED)) {
             primary.setText("Contact student");
             primary.setOnClickListener(v -> {
@@ -2375,6 +2609,16 @@ public class Order {
             addOrderStep(steps, 3, "Order cancelled",
                     order.cancellationOutcome.isEmpty() ? "This order was cancelled" : order.cancellationOutcome,
                     true, false, true);
+        } else if (order.digitalOrder) {
+            boolean paid = order.paymentConfirmed();
+            boolean documentReady = paid && order.hasDocument();
+            addOrderStep(steps, 3, "Payment",
+                    !order.paymentRequired() ? "No payment required"
+                            : paid ? "Payment confirmed by seller" : "Waiting for the seller to confirm payment",
+                    paid, confirmed && !paid, false);
+            addOrderStep(steps, 4, "Download",
+                    documentReady ? "Document unlocked" : "Unlocks after payment confirmation",
+                    documentReady, paid && !documentReady, false);
         } else if (order.deliveryOrder()) {
             addOrderStep(steps, 3, "Delivery",
                     order.deliveryAddress.isEmpty() ? "Waiting for a delivery address"
@@ -2398,7 +2642,52 @@ public class Order {
         }
         content.addView(steps);
 
-        if (order.deliveryOrder()) {
+        if ((order.digitalOrder || order.hasDocument()) && confirmed && !cancelled) {
+            content.addView(orderSectionTitle("Payment"));
+            LinearLayout paymentCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
+            paymentCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+            if (!order.paymentRequired()) {
+                paymentCard.addView(host.ui.titleText("No payment required", host.text, 14));
+                paymentCard.addView(host.ui.bodyText(order.hasDocument()
+                        ? "This is a free item, so the document is available now."
+                        : "This is a free item.", host.muted, 12));
+                if (order.digitalOrder && order.isSeller(host.currentStudentEmail)
+                        && order.status.equals(MainActivity.TransactionRecord.HELD)) {
+                    Button complete = host.ui.primaryButton("Complete digital order");
+                    LinearLayout.LayoutParams completeParams = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+                    completeParams.topMargin = host.ui.dp(10);
+                    complete.setOnClickListener(v -> confirmDigitalCompletion(order));
+                    paymentCard.addView(complete, completeParams);
+                }
+            } else if (order.paymentConfirmed()) {
+                paymentCard.addView(host.ui.titleText("Payment received", host.readableInk(host.green), 14));
+                paymentCard.addView(host.ui.bodyText("The seller confirmed the money arrived"
+                        + (order.hasDocument() ? ". The document is unlocked for the buyer." : "."),
+                        host.muted, 12));
+            } else if (order.isSeller(host.currentStudentEmail)) {
+                paymentCard.addView(host.ui.titleText("Confirm payment", host.text, 14));
+                paymentCard.addView(host.ui.bodyText("Only confirm after the money is in your account. "
+                        + (order.hasDocument()
+                        ? "The buyer's document unlocks immediately." : "This records that payment is settled."),
+                        host.muted, 12));
+                Button confirm = host.ui.primaryButton(order.digitalOrder
+                        ? "Confirm payment & release" : "Confirm payment received");
+                LinearLayout.LayoutParams confirmParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+                confirmParams.topMargin = host.ui.dp(10);
+                confirm.setOnClickListener(v -> confirmPaymentReceived(order));
+                paymentCard.addView(confirm, confirmParams);
+            } else {
+                paymentCard.addView(host.ui.titleText("Payment pending", host.text, 14));
+                paymentCard.addView(host.ui.bodyText(order.hasDocument()
+                        ? "The seller has not confirmed the payment yet. The PDF download unlocks as soon as they do."
+                        : "Waiting for the seller to confirm payment.", host.muted, 12));
+            }
+            content.addView(paymentCard);
+        }
+
+        if (order.deliveryOrder() && !order.digitalOrder) {
             content.addView(orderSectionTitle("Delivery tracking"));
             LinearLayout deliveryCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
             deliveryCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
@@ -2430,7 +2719,7 @@ public class Order {
                 deliveryCard.addView(host.ui.bodyText(closed, host.muted, 11));
             }
             content.addView(deliveryCard);
-        } else {
+        } else if (!order.digitalOrder) {
             content.addView(orderSectionTitle("Pickup"));
             LinearLayout pickupCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
             pickupCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
@@ -2460,6 +2749,7 @@ public class Order {
             content.addView(pickupCard);
         }
 
+        if (!order.digitalOrder) {
         content.addView(orderSectionTitle("Collection photo"));
         LinearLayout proofCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
         proofCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
@@ -2507,6 +2797,41 @@ public class Order {
                     host.muted, 12));
         }
         content.addView(proofCard);
+        }
+
+        if (order.hasDocument() && (order.isSeller(host.currentStudentEmail)
+                || (order.isBuyer(host.currentStudentEmail) && order.paymentConfirmed()))
+                && (order.status.equals(MainActivity.TransactionRecord.HELD)
+                || order.status.equals(MainActivity.TransactionRecord.COMPLETED))) {
+            content.addView(orderSectionTitle("Document"));
+            LinearLayout documentCard = host.ui.card(host.surface(), 14, host.ui.dp(14));
+            documentCard.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+            documentCard.addView(host.ui.titleText(order.documentName.isEmpty()
+                    ? "Attached document" : order.documentName, host.text, 14));
+            String meta = order.documentMime == null || order.documentMime.isEmpty()
+                    ? "Document" : order.documentMime;
+            if (order.documentSize > 0) meta += " / " + readableDocumentSize(order.documentSize);
+            documentCard.addView(host.ui.bodyText(meta, host.muted, 11));
+            documentCard.addView(host.ui.bodyText(order.isBuyer(host.currentStudentEmail)
+                    ? "The seller confirmed your payment. Open or download the file below."
+                    : order.paymentConfirmed()
+                        ? "The buyer can now open this after payment confirmation."
+                        : "The buyer's download stays locked until you confirm payment.",
+                    host.muted, 11));
+            LinearLayout actions = host.ui.horizontal();
+            Button open = host.ui.secondaryButton("Open");
+            open.setOnClickListener(v -> openOrderDocument(order));
+            actions.addView(open, new LinearLayout.LayoutParams(0, host.ui.dp(46), 1));
+            actions.addView(host.ui.space(host.ui.dp(8), 1));
+            Button download = host.ui.primaryButton("Download");
+            download.setOnClickListener(v -> downloadOrderDocument(order));
+            actions.addView(download, new LinearLayout.LayoutParams(0, host.ui.dp(46), 1));
+            LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            actionParams.topMargin = host.ui.dp(10);
+            documentCard.addView(actions, actionParams);
+            content.addView(documentCard);
+        }
 
         if (!order.invoiceNumber.isEmpty()) {
             content.addView(orderSectionTitle("Invoice"));
@@ -2661,6 +2986,7 @@ public class Order {
     /** Buyer starts the only valid collection confirmation: a photo. */
     public void promptCollectionPhoto(MainActivity.TransactionRecord order) {
         if (order == null || !order.isBuyer(host.currentStudentEmail)
+                || order.digitalOrder
                 || !order.status.equals(MainActivity.TransactionRecord.HELD)) return;
         LinearLayout body = new LinearLayout(host);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -2709,6 +3035,7 @@ public class Order {
     public void receiveCollectionPhoto(String orderId, Uri uri) {
         MainActivity.TransactionRecord order = orderById(orderId);
         if (order == null || !order.isBuyer(host.currentStudentEmail)
+                || order.digitalOrder
                 || !order.status.equals(MainActivity.TransactionRecord.HELD) || uri == null) {
             collectionPhotoCancelled();
             return;
@@ -2773,7 +3100,8 @@ public class Order {
 
     /** Completion is seller-only and requires the buyer's photo. */
     private void confirmSellerVerification(MainActivity.TransactionRecord order) {
-        if (!order.isSeller(host.currentStudentEmail) || !order.collectionProofPending()) return;
+        if (!order.isSeller(host.currentStudentEmail) || order.digitalOrder
+                || !order.collectionProofPending()) return;
         MainActivity.Product stock = null;
         for (MainActivity.Product product : host.products) {
             if (product.id.equals(order.productId)) stock = product;
@@ -2827,6 +3155,132 @@ public class Order {
                 }).show();
     }
 
+    /** Seller records that the money arrived; the buyer's PDF unlocks. */
+    private void confirmPaymentReceived(MainActivity.TransactionRecord order) {
+        if (order == null || !order.isSeller(host.currentStudentEmail)
+                || !order.status.equals(MainActivity.TransactionRecord.HELD)
+                || order.cancellationPending() || !order.paymentRequired()
+                || order.paymentConfirmed()) return;
+        String message = order.digitalOrder
+                ? "Confirm that the money is in your account. This releases the PDF to the buyer and completes the digital order."
+                : "Confirm that the money is in your account. This unlocks the buyer's document. "
+                    + "The physical order still needs the collection photo and your verification.";
+        host.ui.dialog().setTitle("Confirm payment received?")
+                .setMessage(message)
+                .setNegativeButton("Not yet", null)
+                .setPositiveButton("Confirm payment", (dialog, which) -> {
+                    if (order.digitalOrder) {
+                        completeDigitalOrderNow(order);
+                        return;
+                    }
+                    long now = System.currentTimeMillis();
+                    if (!order.confirmPaymentBySeller(host.currentStudentEmail, now)) return;
+                    if (!saveTransactions()) {
+                        order.paymentReceivedAt = 0;
+                        order.paymentReceivedBy = "";
+                        Toast.makeText(host, "The payment confirmation didn't save. Try again.",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    cloudUpdateOrder(order);
+                    refreshOrderTab();
+                    host.notification.addNotification(order.buyerEmail, "Payment confirmed",
+                            order.itemTitle + " — payment received."
+                                    + (order.hasDocument() ? " Your document is ready to open." : ""),
+                            "payment", "", order.id);
+                    host.notification.sendPush(order.buyerEmail, "Payment confirmed",
+                            order.itemTitle + (order.hasDocument()
+                                    ? " — your document is unlocked." : " — payment received."),
+                            "payment", "", order.id);
+                    host.notification.showCampusNotification("Payment recorded",
+                            "The buyer can now access the document.", "payment", "", order.id);
+                }).show();
+    }
+
+    /** Free digital orders can be completed without asking for money. */
+    private void confirmDigitalCompletion(MainActivity.TransactionRecord order) {
+        if (order == null || !order.digitalOrder
+                || !order.isSeller(host.currentStudentEmail)
+                || !order.status.equals(MainActivity.TransactionRecord.HELD)
+                || order.cancellationPending() || !order.paymentConfirmed()) return;
+        host.ui.dialog().setTitle("Complete digital order?")
+                .setMessage("No payment is required. This completes the order, unlocks the document and generates an invoice.")
+                .setNegativeButton("Not yet", null)
+                .setPositiveButton("Complete order", (dialog, which) -> completeDigitalOrderNow(order))
+                .show();
+    }
+
+    /** Complete a digital order after payment (or a free download) is settled. */
+    private void completeDigitalOrderNow(MainActivity.TransactionRecord order) {
+        if (order == null || !order.digitalOrder
+                || !order.isSeller(host.currentStudentEmail)
+                || !order.status.equals(MainActivity.TransactionRecord.HELD)) return;
+        MainActivity.Product stock = null;
+        for (MainActivity.Product product : host.products) {
+            if (product.id.equals(order.productId)) stock = product;
+        }
+        if (stock == null) {
+            host.ui.showSimpleMessage("Listing missing",
+                    "The listing behind this order is no longer on this phone.");
+            return;
+        }
+        if (stock.quantity <= 0) {
+            host.ui.showSimpleMessage("Sold out",
+                    "The listing has no stock left, so this digital order can't be completed.");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        String invoice = order.invoiceNumber == null || order.invoiceNumber.isEmpty()
+                ? InvoiceMailer.newNumber(order) : order.invoiceNumber;
+        long previousPayment = order.paymentReceivedAt;
+        String previousPaymentBy = order.paymentReceivedBy;
+        String previousSellerVerifiedBy = order.sellerVerifiedBy;
+        long previousSellerVerifiedTime = order.sellerVerifiedTime;
+        String previousInvoice = order.invoiceNumber;
+        long previousInvoiceTime = order.invoiceFinalizedAt;
+        String previousStatus = order.status;
+        if (!order.confirmDigitalPaymentBySeller(host.currentStudentEmail, now, invoice)) return;
+        if (!saveTransactions()) {
+            order.status = previousStatus;
+            order.paymentReceivedAt = previousPayment;
+            order.paymentReceivedBy = previousPaymentBy;
+            order.sellerVerifiedBy = previousSellerVerifiedBy;
+            order.sellerVerifiedTime = previousSellerVerifiedTime;
+            order.invoiceNumber = previousInvoice;
+            order.invoiceFinalizedAt = previousInvoiceTime;
+            Toast.makeText(host, "The digital order didn't save. Give it another go.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        for (MainActivity.Product product : host.products) {
+            if (!product.id.equals(order.productId)) continue;
+            boolean wasPaused = product.status.equals("Paused") || product.status.equals("Draft");
+            product.quantity = Math.max(0, product.quantity - 1);
+            product.status = product.quantity > 0
+                    ? (wasPaused ? "Paused" : "Available") : "Sold";
+            product.updatedTime = order.sellerVerifiedTime > 0
+                    ? order.sellerVerifiedTime : System.currentTimeMillis();
+            host.market.cloudMirrorListing(product, false);
+        }
+        host.market.saveProducts();
+        cloudUpdateOrder(order);
+        refreshOrderTab();
+        host.inbox.closeMarketplaceChatForEmail(order.buyerEmail,
+                "Order " + order.id + " is complete. This order conversation has ended.");
+        host.notification.addNotification(order.buyerEmail, "Digital order complete",
+                order.itemTitle + " — payment confirmed. Your document is unlocked. Invoice "
+                        + order.invoiceNumber + " is ready.",
+                "payment", "", order.id);
+        host.notification.sendPush(order.buyerEmail, "Digital order complete",
+                order.itemTitle + " — your document is ready. Invoice " + order.invoiceNumber + ".",
+                "payment", "", order.id);
+        host.notification.showCampusNotification("Digital order complete",
+                "Payment confirmed and document released. Invoice " + order.invoiceNumber + " is ready.",
+                "payment", "", order.id);
+        showReceipt(order);
+        InvoiceMailer.finalise(host, order);
+    }
+
     private String deliveryLocationLabel(long at) {
         return at <= 0 ? "Not shared yet" : "Updated " + host.messageTime(at);
     }
@@ -2862,16 +3316,18 @@ public class Order {
             openOrderChat(order);
         });
         if (order.status.equals(MainActivity.TransactionRecord.HELD) && !order.cancellationPending()) {
-            if (order.deliveryOrder()) {
-                addOrderAction(body, "pin", "Delivery map", "Live buyer and seller locations", v -> {
-                    if (sheetRef[0] != null) sheetRef[0].dismiss();
-                    DeliveryMap.showOrder(host, order);
-                });
-            } else {
-                addOrderAction(body, "calendar", "Campus pickup", "Confirm or change the handover plan", v -> {
-                    if (sheetRef[0] != null) sheetRef[0].dismiss();
-                    host.market.pickupActions(order);
-                });
+            if (!order.digitalOrder) {
+                if (order.deliveryOrder()) {
+                    addOrderAction(body, "pin", "Delivery map", "Live buyer and seller locations", v -> {
+                        if (sheetRef[0] != null) sheetRef[0].dismiss();
+                        DeliveryMap.showOrder(host, order);
+                    });
+                } else {
+                    addOrderAction(body, "calendar", "Campus pickup", "Confirm or change the handover plan", v -> {
+                        if (sheetRef[0] != null) sheetRef[0].dismiss();
+                        host.market.pickupActions(order);
+                    });
+                }
             }
             addOrderAction(body, "flag", "Cancellation", "Ask to cancel this order", v -> {
                 if (sheetRef[0] != null) sheetRef[0].dismiss();
@@ -3000,36 +3456,86 @@ public class Order {
             return;
         }
         if (!order.approveBySeller(host.currentStudentEmail)) return;
-        long now = System.currentTimeMillis();
-        java.util.ArrayList<MainActivity.TransactionRecord> superseded = new java.util.ArrayList<>();
-        for (MainActivity.TransactionRecord other : host.transactions) {
-            if (other == order || !other.productId.equals(order.productId)
-                    || !other.status.equals(MainActivity.TransactionRecord.REQUESTED)) continue;
-            other.status = MainActivity.TransactionRecord.CANCELLED;
-            other.cancellationOutcome = "Another request was accepted";
-            other.cancellationTime = now;
-            superseded.add(other);
-        }
-        if (!saveTransactions()) {
-            order.status = MainActivity.TransactionRecord.REQUESTED;
-            for (MainActivity.TransactionRecord other : superseded) {
-                other.status = MainActivity.TransactionRecord.REQUESTED;
-                other.cancellationOutcome = "";
-                other.cancellationTime = 0;
+        final MainActivity.Product approvedStock = stock;
+        attachDocumentToOrder(order, approvedStock, () -> {
+            long now = System.currentTimeMillis();
+            java.util.ArrayList<MainActivity.TransactionRecord> superseded = new java.util.ArrayList<>();
+            for (MainActivity.TransactionRecord other : host.transactions) {
+                if (other == order || !other.productId.equals(order.productId)
+                        || !other.status.equals(MainActivity.TransactionRecord.REQUESTED)) continue;
+                other.status = MainActivity.TransactionRecord.CANCELLED;
+                other.cancellationOutcome = "Another request was accepted";
+                other.cancellationTime = now;
+                superseded.add(other);
             }
-            Toast.makeText(host, "Couldn't approve that request. Give it another go.", Toast.LENGTH_LONG).show();
+            if (!saveTransactions()) {
+                order.status = MainActivity.TransactionRecord.REQUESTED;
+                for (MainActivity.TransactionRecord other : superseded) {
+                    other.status = MainActivity.TransactionRecord.REQUESTED;
+                    other.cancellationOutcome = "";
+                    other.cancellationTime = 0;
+                }
+                Toast.makeText(host, "Couldn't approve that request. Give it another go.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            syncListingFor(order);
+            cloudUpdateOrder(order, true);
+            for (MainActivity.TransactionRecord other : superseded) cloudUpdateOrder(other);
+            String nextStep = order.digitalOrder
+                    ? "Waiting for the seller to confirm payment."
+                    : "Arrange collection.";
+            host.notification.addNotification(order.buyerEmail, "Purchase confirmed",
+                    order.itemTitle + " is confirmed. " + nextStep, "payment", "", order.id);
+            host.notification.sendPush(order.buyerEmail, "Purchase confirmed",
+                    order.itemTitle + " is confirmed. " + nextStep, "payment", "", order.id);
+            host.notification.showCampusNotification("Purchase confirmed",
+                    order.itemTitle + (order.digitalOrder
+                            ? ". Confirm payment before releasing the document."
+                            : ". Arrange collection with the buyer."), "payment", "", order.id);
+            host.showAppScreen("Payments");
+        });
+    }
+
+    /** Copy the private listing document into the order at seller approval. */
+    private void attachDocumentToOrder(MainActivity.TransactionRecord order,
+                                       MainActivity.Product stock, Runnable done) {
+        if (order == null || stock == null) {
+            if (done != null) done.run();
             return;
         }
-        syncListingFor(order);
-        cloudUpdateOrder(order);
-        for (MainActivity.TransactionRecord other : superseded) cloudUpdateOrder(other);
-        host.notification.addNotification(order.buyerEmail, "Purchase confirmed",
-                order.itemTitle + " is confirmed. Arrange collection.", "payment", "", order.id);
-        host.notification.sendPush(order.buyerEmail, "Purchase confirmed",
-                order.itemTitle + " is confirmed. Arrange collection.", "payment", "", order.id);
-        host.notification.showCampusNotification("Purchase confirmed",
-                order.itemTitle + ". Arrange collection with the buyer.", "payment", "", order.id);
-        host.showAppScreen("Payments");
+        if (stock.documentUrl != null && !stock.documentUrl.isEmpty()) {
+            order.documentUrl = stock.documentUrl;
+            order.documentName = stock.documentName == null ? "" : stock.documentName;
+            order.documentMime = stock.documentMime == null ? "" : stock.documentMime;
+            order.documentSize = stock.documentSize;
+            if (done != null) done.run();
+            return;
+        }
+        if (order.productId == null || order.productId.isEmpty()) {
+            if (done != null) done.run();
+            return;
+        }
+        String listingId = com.campustrade.auth.data.CloudSync.remoteId(host, order.productId);
+        if (listingId.isEmpty()) listingId = order.productId;
+        com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                .collection("listingDocuments").document(listingId).get()
+                .addOnSuccessListener(doc -> {
+                    String url = doc.exists() ? doc.getString("documentURL") : "";
+                    if (url != null && !url.isEmpty()) {
+                        order.documentUrl = url;
+                        String name = doc.getString("documentName");
+                        String mime = doc.getString("documentMime");
+                        Long size = doc.getLong("documentSize");
+                        order.documentName = name == null ? "" : name;
+                        order.documentMime = mime == null ? "" : mime;
+                        order.documentSize = size == null ? 0 : size;
+                    }
+                    if (done != null) done.run();
+                })
+                .addOnFailureListener(e -> {
+                    android.util.Log.d("CampusTrade", "private document copy failed: " + e.getMessage());
+                    if (done != null) done.run();
+                });
     }
 
     /** Seller declines; the listing returns to Market. */
@@ -3145,6 +3651,13 @@ public class Order {
                     order.sellerVerifiedTime = record.optLong("sellerVerifiedTime", 0);
                     order.invoiceNumber = record.optString("invoiceNumber", "");
                     order.invoiceFinalizedAt = record.optLong("invoiceFinalizedAt", 0);
+                    order.documentUrl = record.optString("documentUrl", "");
+                    order.documentName = record.optString("documentName", "");
+                    order.documentMime = record.optString("documentMime", "");
+                    order.documentSize = record.optLong("documentSize", 0);
+                    order.digitalOrder = record.optBoolean("digitalOrder", false);
+                    order.paymentReceivedAt = record.optLong("paymentReceivedAt", 0);
+                    order.paymentReceivedBy = record.optString("paymentReceivedBy", "");
                     host.transactions.add(order);
                     host.inbox.markMarketplaceChat(order.isBuyer(host.currentStudentEmail)
                             ? order.sellerEmail : order.buyerEmail);
@@ -3209,6 +3722,11 @@ public class Order {
                     .put("collectionPhotoBy", order.collectionPhotoBy).put("collectionPhotoTime", order.collectionPhotoTime)
                     .put("sellerVerifiedBy", order.sellerVerifiedBy).put("sellerVerifiedTime", order.sellerVerifiedTime)
                     .put("invoiceNumber", order.invoiceNumber).put("invoiceFinalizedAt", order.invoiceFinalizedAt)
+                    .put("documentUrl", order.documentUrl).put("documentName", order.documentName)
+                    .put("documentMime", order.documentMime).put("documentSize", order.documentSize)
+                    .put("digitalOrder", order.digitalOrder)
+                    .put("paymentReceivedAt", order.paymentReceivedAt)
+                    .put("paymentReceivedBy", order.paymentReceivedBy)
                     .put("createdTime", order.createdMillis()));
         } catch (org.json.JSONException e) { return false; }
         return com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_orders").edit().putString("records", records.toString()).commit();

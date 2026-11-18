@@ -186,6 +186,49 @@ service cloud.firestore {
         && (resource.data.sellerID == request.auth.uid || isAdmin());
     }
 
+    // ---- private listing documents ----------------------------------------
+    // A listing may advertise that a document is included, but the download
+    // URL lives here and is readable only by the seller (and admins). The
+    // seller copies it into an order when they confirm the purchase, which is
+    // the point the buyer gets read access through the order document.
+    match /listingDocuments/{listingId} {
+      allow read: if signedIn()
+        && (resource.data.sellerID == request.auth.uid || isAdmin());
+      allow create: if signedIn()
+        && request.resource.data.sellerID == request.auth.uid
+        && request.resource.data.documentURL is string
+        && request.resource.data.documentURL.size() > 0
+        && request.resource.data.documentURL.size() <= 2000
+        && request.resource.data.documentName is string
+        && request.resource.data.documentName.size() <= 255
+        && request.resource.data.documentMime is string
+        && request.resource.data.documentMime.size() <= 100
+        && request.resource.data.documentSize is number
+        && request.resource.data.documentSize >= 0
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.keys().hasOnly(
+             ['sellerID', 'documentURL', 'documentName', 'documentMime',
+              'documentSize', 'updatedAt']);
+      allow update: if signedIn()
+        && resource.data.sellerID == request.auth.uid
+        && request.resource.data.sellerID == resource.data.sellerID
+        && request.resource.data.documentURL is string
+        && request.resource.data.documentURL.size() > 0
+        && request.resource.data.documentURL.size() <= 2000
+        && request.resource.data.documentName is string
+        && request.resource.data.documentName.size() <= 255
+        && request.resource.data.documentMime is string
+        && request.resource.data.documentMime.size() <= 100
+        && request.resource.data.documentSize is number
+        && request.resource.data.documentSize >= 0
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.keys().hasOnly(
+             ['sellerID', 'documentURL', 'documentName', 'documentMime',
+              'documentSize', 'updatedAt']);
+      allow delete: if signedIn()
+        && (resource.data.sellerID == request.auth.uid || isAdmin());
+    }
+
     // ---- orders ------------------------------------------------------------
     match /orders/{orderId} {
       function coreFieldsUnchanged() {
@@ -254,6 +297,8 @@ service cloud.firestore {
         && request.resource.data.category is string
         && request.resource.data.category
              == get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.category
+        && (!('digitalOrder' in request.resource.data)
+            || request.resource.data.digitalOrder is bool)
         && request.resource.data.buyerEmail is string
         && request.resource.data.buyerEmail.lower() == request.auth.token.email.lower()
         && request.resource.data.sellerEmail is string
@@ -275,7 +320,7 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(
              ['listingId', 'buyerId', 'sellerId', 'title', 'price', 'listPrice', 'method',
               'buyerEmail', 'sellerEmail', 'buyerName', 'buyerPhone', 'reference',
-              'category', 'status', 'deliveryMethod', 'deliveryAddress', 'createdAt']);
+              'category', 'status', 'deliveryMethod', 'deliveryAddress', 'digitalOrder', 'createdAt']);
 
       // Explicit transitions only. Cancellation metadata is not free-form:
       //  - REQUESTED -> HELD by seller
@@ -294,7 +339,61 @@ service cloud.firestore {
           (resource.data.status == 'REQUESTED'
             && request.resource.data.status == 'HELD'
             && request.auth.uid == resource.data.sellerId
-            && changedOnly(['status', 'updatedAt']))
+            && changedOnly(['status', 'updatedAt', 'documentURL', 'documentName',
+                            'documentMime', 'documentSize'])
+            && (!('documentURL' in request.resource.data)
+                || (request.resource.data.documentURL is string
+                    && request.resource.data.documentURL.size() <= 2000))
+            && (!('documentName' in request.resource.data)
+                || (request.resource.data.documentName is string
+                    && request.resource.data.documentName.size() <= 255))
+            && (!('documentMime' in request.resource.data)
+                || (request.resource.data.documentMime is string
+                    && request.resource.data.documentMime.size() <= 100))
+            && (!('documentSize' in request.resource.data)
+                || (request.resource.data.documentSize is number
+                    && request.resource.data.documentSize >= 0)))
+          ||
+          // Seller confirms the money arrived. This unlocks a document
+          // attached to a physical order; digital orders use the transition
+          // below so they also complete.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'HELD'
+            && request.auth.uid == resource.data.sellerId
+            && resource.data.get('cancellationRequester', '') == ''
+            && request.resource.data.paymentReceivedAt is number
+            && request.resource.data.paymentReceivedAt > 0
+            && request.resource.data.paymentReceivedBy is string
+            && request.resource.data.paymentReceivedBy.lower() == request.auth.token.email.lower()
+            && changedOnly(['status', 'paymentReceivedAt', 'paymentReceivedBy', 'updatedAt']))
+          ||
+          // Seller confirms payment for a digital/PDF order. There is no
+          // physical handover, so this completes the order and releases the
+          // document without a collection photo.
+          (resource.data.status == 'HELD'
+            && request.resource.data.status == 'COMPLETED'
+            && request.auth.uid == resource.data.sellerId
+            && request.resource.data.get('digitalOrder', false) == true
+            && resource.data.get('cancellationRequester', '') == ''
+            && (request.resource.data.price == 0
+                || (request.resource.data.paymentReceivedAt is number
+                    && request.resource.data.paymentReceivedAt > 0
+                    && request.resource.data.paymentReceivedBy is string
+                    && request.resource.data.paymentReceivedBy.lower()
+                       == request.auth.token.email.lower()))
+            && request.resource.data.sellerVerifiedBy is string
+            && request.resource.data.sellerVerifiedBy.lower()
+               == request.auth.token.email.lower()
+            && request.resource.data.sellerVerifiedTime is number
+            && request.resource.data.sellerVerifiedTime > 0
+            && request.resource.data.invoiceNumber is string
+            && request.resource.data.invoiceNumber.size() > 0
+            && request.resource.data.invoiceNumber.size() <= 80
+            && request.resource.data.invoiceFinalizedAt is number
+            && request.resource.data.invoiceFinalizedAt > 0
+            && changedOnly(['status', 'paymentReceivedAt', 'paymentReceivedBy',
+                            'sellerVerifiedBy', 'sellerVerifiedTime', 'invoiceNumber',
+                            'invoiceFinalizedAt', 'updatedAt']))
           ||
           // Buyer withdraws, or seller declines, a pending request.
           (resource.data.status == 'REQUESTED'
