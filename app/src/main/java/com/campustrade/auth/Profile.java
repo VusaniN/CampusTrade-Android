@@ -1001,20 +1001,8 @@ public class Profile {
     }
 
     // Use the seller's avatar, not the signed-in student's.
-    private View sellerAvatar(String email, String name, int size, int textSize, int textColor, int background) {
-        String image = com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_profiles")
-                .getString("profile_image:" + email, "");
-        if (image != null && !image.isEmpty()) {
-            ImageView photo = new ImageView(host);
-            photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            photo.setContentDescription(name + " profile photo");
-            Glide.with(host).load(image).circleCrop().into(photo);
-            return photo;
-        }
-        TextView avatar = host.ui.titleText(host.ui.initials(name), textColor, textSize);
-        avatar.setGravity(Gravity.CENTER);
-        avatar.setBackground(host.ui.round(background, 999));
-        return avatar;
+    private View sellerAvatar(String email, String name, int textSize, int textColor, int background) {
+        return StudentAvatar.create(host, email, name, textSize, textColor, background);
     }
 
     private void changePassword() {
@@ -1236,7 +1224,7 @@ public class Profile {
         hero.setPadding(host.ui.dp(16), host.ui.dp(18), host.ui.dp(16), host.ui.dp(16));
         hero.setBackground(host.ui.strokedRound(host.surface(), 16, host.line));
         String sellerDisplayName = host.studentName(email);
-        View avatar = sellerAvatar(email, sellerDisplayName, host.ui.dp(84), 28, Color.WHITE, host.blue);
+        View avatar = sellerAvatar(email, sellerDisplayName, 28, Color.WHITE, host.blue);
         hero.addView(avatar, new LinearLayout.LayoutParams(host.ui.dp(84), host.ui.dp(84)));
         TextView name = host.ui.titleText(sellerDisplayName, host.text, 20);
         name.setGravity(Gravity.CENTER);

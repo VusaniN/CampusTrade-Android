@@ -3403,9 +3403,8 @@ public class Market {
         sellerCard.setLayoutParams(sellerParams);
         LinearLayout sellerTop = host.ui.horizontal();
         sellerTop.setGravity(Gravity.CENTER_VERTICAL);
-        TextView avatar = host.ui.titleText(host.ui.initials(sellerLabel(product)), host.blue, 14);
-        avatar.setGravity(Gravity.CENTER);
-        avatar.setBackground(host.ui.round(Color.rgb(234, 242, 255), 999));
+        View avatar = StudentAvatar.create(host, product.sellerEmail, sellerLabel(product), 14,
+                host.blue, host.nightActive ? Color.rgb(40, 52, 70) : Color.rgb(234, 242, 255));
         sellerTop.addView(avatar, new LinearLayout.LayoutParams(host.ui.dp(42), host.ui.dp(42)));
         LinearLayout sellerCopy = new LinearLayout(host);
         sellerCopy.setOrientation(LinearLayout.VERTICAL);
@@ -3445,7 +3444,6 @@ public class Market {
                                 if (name == null || name.trim().isEmpty()) return;
                                 if (page.isShowing()) {
                                     sellerNameLabel.setText(name);
-                                    avatar.setText(host.ui.initials(name));
                                 }
                                 product.sellerName = name;
                                 CloudSync.cacheProfile(host, sellerUid, name, product.sellerEmail);
