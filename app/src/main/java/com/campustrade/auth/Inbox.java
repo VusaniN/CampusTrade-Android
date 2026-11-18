@@ -1071,8 +1071,7 @@ public class Inbox {
         title.setEllipsize(TextUtils.TruncateAt.END);
         heading.addView(title);
         TextView typingStatus = host.ui.bodyText(isAdminConversation(peer) ? "Campus moderator"
-                : peer.equals(HelperBot.PEER) ? "Virtual assistant"
-                : host.inbox.isMarketplaceChat(peer) ? "Marketplace conversation" : "Verified student", host.muted, 10);
+                : peer.equals(HelperBot.PEER) ? "Virtual assistant" : "Verified student", host.muted, 10);
         typingStatus.setSingleLine(true);
         heading.addView(typingStatus);
         header.addView(heading, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -1301,31 +1300,6 @@ public class Inbox {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             helperParams.bottomMargin = host.ui.dp(14);
             container.addView(helper, helperParams);
-        } else if (isMarketplaceChat(peer)) {
-            LinearLayout action = host.ui.card(host.page, 0, host.ui.dp(12));
-            action.setBackground(host.ui.strokedRound(host.surface(), 12, host.line));
-            action.addView(host.ui.titleText("Marketplace conversation", host.text, 13));
-            action.addView(host.ui.bodyText("Keep payment and pickup inside CampusTrade. Need the full order?",
-                    host.muted, 11));
-            LinearLayout actions = host.ui.horizontal();
-            TextView orders = host.ui.textButton("View orders");
-            orders.setOnClickListener(v -> {
-                if (host.openChatDialog != null) host.openChatDialog.dismiss();
-                host.order.showTransactionHistory();
-            });
-            TextView market = host.ui.textButton("Browse listings");
-            market.setOnClickListener(v -> {
-                if (host.openChatDialog != null) host.openChatDialog.dismiss();
-                host.showAppScreen("Market");
-            });
-            actions.addView(orders, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, host.ui.dp(38)));
-            actions.addView(host.ui.space(host.ui.dp(8), 1));
-            actions.addView(market, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, host.ui.dp(38)));
-            action.addView(actions);
-            LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            actionParams.bottomMargin = host.ui.dp(12);
-            container.addView(action, actionParams);
         }
 
         int shown = 0;
