@@ -54,7 +54,6 @@ public class Community {
         });
         Button create = host.ui.primaryButton("Create study group"); create.setOnClickListener(v -> createStudyGroup()); content.addView(create);
         EditText search = host.ui.input("Search groups or modules", InputType.TYPE_CLASS_TEXT); content.addView(search);
-        LinearLayout rows = new LinearLayout(host); rows.setOrientation(LinearLayout.VERTICAL); content.addView(rows);
         LinearLayout suggestionsSection = new LinearLayout(host); suggestionsSection.setOrientation(LinearLayout.VERTICAL);
         suggestionsSection.addView(host.ui.sectionHeading("Suggested study partners", "Same course & year"));
         HorizontalScrollView suggScroll = new HorizontalScrollView(host);
@@ -63,6 +62,7 @@ public class Community {
         suggScroll.addView(suggRow);
         suggestionsSection.addView(suggScroll);
         content.addView(suggestionsSection);
+        LinearLayout rows = new LinearLayout(host); rows.setOrientation(LinearLayout.VERTICAL); content.addView(rows);
         // Redraws the list on each keystroke and hides suggestions while searching.
         final Runnable[] renderRef = new Runnable[1];
         Runnable render = () -> {
@@ -206,27 +206,23 @@ public class Community {
         final String myCourse = profilePrefs.getString("course:" + host.currentStudentEmail, "");
         final String myYear = profilePrefs.getString("year:" + host.currentStudentEmail, "");
         final String uid = CloudSync.uid(host);
-        if (myCourse.isEmpty() || uid.isEmpty()) {
-            row.addView(host.ui.bodyText("Set your course in Edit profile to get study partner suggestions.", host.muted, 12));
+        if (myCourse.isEmpty() || myYear.isEmpty() || uid.isEmpty()) {
+            row.addView(host.ui.bodyText("Set your course and year in Edit profile to get study partner suggestions.", host.muted, 12));
             return;
         }
-        row.addView(host.ui.bodyText("Finding classmates...", host.muted, 12));
+        row.addView(host.ui.bodyText("Finding classmates in your programme and year...", host.muted, 12));
         com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("publicProfiles")
-                .whereEqualTo("course", myCourse).limit(15).get()
+                .whereEqualTo("course", myCourse).limit(50).get()
                 .addOnSuccessListener(snap -> {
                     if (host.isDestroyed() || host.isFinishing()) return;
                     row.removeAllViews();
                     java.util.ArrayList<com.google.firebase.firestore.QueryDocumentSnapshot> docs =
                             new java.util.ArrayList<>();
                     for (com.google.firebase.firestore.QueryDocumentSnapshot d : snap) {
-                        if (!d.getId().equals(uid)) {
-                            docs.add(d);
-                        }
+                        if (d.getId().equals(uid)) continue;
+                        if (!myYear.equals(d.getString("year"))) continue;
+                        docs.add(d);
                     }
-                    final boolean hasYear = !myYear.isEmpty();
-                    java.util.Collections.sort(docs, (a, b) -> Boolean.compare(
-                            hasYear && myYear.equals(b.getString("year")),
-                            hasYear && myYear.equals(a.getString("year"))));
                     int shown = 0;
                     for (com.google.firebase.firestore.QueryDocumentSnapshot d : docs) {
                         if (shown >= 10) break;
@@ -276,7 +272,7 @@ public class Community {
                         shown++;
                     }
                     if (shown == 0) {
-                        row.addView(host.ui.bodyText("No classmates on CampusTrade yet. Invite them!", host.muted, 12));
+                        row.addView(host.ui.bodyText("No classmates in your programme and year yet. Invite them!", host.muted, 12));
                     }
                 })
                 .addOnFailureListener(e -> {
@@ -437,6 +433,16 @@ public class Community {
                 .collection("studyGroups").document(g.id)
                 .update("members", com.google.firebase.firestore.FieldValue.arrayRemove(uid))
                 .addOnFailureListener(e -> android.util.Log.w("CampusTrade", "group leave failed: " + e.getMessage()));
+    }
+
+    // The Firestore rule allows the creator to delete the group document.
+    private void cloudDeleteGroup(CampusFeatures.Group g) {
+        if (g == null || !g.owner.equals(host.currentStudentEmail)) return;
+        com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                .collection("studyGroups").document(g.id).delete()
+                .addOnFailureListener(e -> Toast.makeText(host,
+                        "Group removed on this phone, but the cloud copy didn't delete: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show());
     }
 
     // Firebase uses student IDs, so look up the ID before approving.
@@ -729,6 +735,13 @@ public class Community {
             invite.setPadding(host.ui.dp(12), host.ui.dp(4), host.ui.dp(4), host.ui.dp(4));
             invite.setOnClickListener(v -> shareGroup(g));
             actions.addView(invite);
+            if (g.owner.equals(host.currentStudentEmail)) {
+                TextView delete = host.ui.textButton("Delete");
+                delete.setTextColor(host.error);
+                delete.setPadding(host.ui.dp(12), host.ui.dp(4), host.ui.dp(4), host.ui.dp(4));
+                delete.setOnClickListener(v -> confirmDeleteGroup(g, page));
+                actions.addView(delete);
+            }
             hero.addView(actions);
         } else {
             hero.addView(host.ui.bodyText(g.privateGroup
@@ -842,6 +855,33 @@ public class Community {
         params.bottomMargin = host.ui.dp(8);
         card.setLayoutParams(params);
         return card;
+    }
+
+    /** The creator can remove the group for everyone. */
+    private void confirmDeleteGroup(CampusFeatures.Group g, Dialog page) {
+        if (!g.owner.equals(host.currentStudentEmail)) return;
+        host.ui.dialog()
+                .setTitle("Delete \"" + g.name + "\"?")
+                .setMessage("This removes the study group, its feed and its posts for every member. This can't be undone.")
+                .setNegativeButton("Keep group", null)
+                .setPositiveButton("Delete group", (d, which) -> {
+                    try {
+                        host.featureStore.update(f -> f.deleteGroup(g.id, host.currentStudentEmail));
+                        for (String member : g.members) {
+                            if (member.equals(host.currentStudentEmail)) continue;
+                            host.notification.sendPush(member, "Study group deleted",
+                                    g.name + " was deleted by the group owner.", "groups", "");
+                        }
+                        cloudDeleteGroup(g);
+                        if (page != null) page.dismiss();
+                        openGroupPage = null;
+                        host.showAppScreen("Groups");
+                        Toast.makeText(host, "Study group deleted.", Toast.LENGTH_SHORT).show();
+                    } catch (RuntimeException e) {
+                        Toast.makeText(host, e.getMessage() == null ? "Couldn't delete that group"
+                                : e.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                }).show();
     }
 
     // Owners approve requests; members can leave.

@@ -35,6 +35,8 @@ public class Auth {
 
     // Build the login/sign-up screen and reset old admin state.
     void showAuthScreen() {
+        host.stopPresenceTracking();
+        host.markOffline();
         host.adminAccess = false;
         host.adminOnlySession = false;
         ScrollView scroll = new ScrollView(host);
@@ -94,7 +96,7 @@ public class Auth {
         host.adminTab = host.ui.tab("Admin");
         tabs.addView(host.loginTab, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         tabs.addView(host.signupTab, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
-        // Admin is hidden from students. Staff use the small link at the bottom.
+        // Admin tools are never shown on the student login screen.
         host.adminTab.setVisibility(View.GONE);
 
         host.adminGroup = host.ui.group(form);
@@ -253,13 +255,6 @@ public class Auth {
         );
         noticeParams.topMargin = host.ui.dp(16);
         form.addView(host.authNotice, noticeParams);
-
-        // Staff link is small and separate from student tabs.
-        TextView staffAccess = host.ui.smallText("Campus staff access");
-        staffAccess.setGravity(Gravity.CENTER);
-        staffAccess.setPadding(0, host.ui.dp(18), 0, host.ui.dp(4));
-        staffAccess.setOnClickListener(v -> setAdminMode());
-        form.addView(staffAccess);
 
         if (host.loginTab != null) host.loginTab.setOnClickListener(v -> setMode(false));
         if (host.signupTab != null) host.signupTab.setOnClickListener(v -> setMode(true));
@@ -741,6 +736,7 @@ public class Auth {
         host.getIntent().removeExtra("open_notifications");
         host.getIntent().removeExtra("open_inbox");
         host.startChatListeners();
+        host.startPresenceTracking();
         if (!strictAdmin) {
             host.market.syncFavourites();
             host.safety.sync(host.currentStudentEmail, host.currentUid);

@@ -34,6 +34,9 @@ public class Admin {
     private boolean reportCloudWarningShown = false;
     private boolean adminChatsLoading = false;
     private long adminChatsLoadedAt = 0;
+    private com.google.firebase.firestore.ListenerRegistration presenceListener;
+    private TextView liveStudentsValue;
+    private int liveStudents = 0;
 
     public Admin(MainActivity host) {
         this.host = host;
@@ -47,14 +50,15 @@ public class Admin {
     }
 
     public boolean canUseAdmin() {
-        return (host.isSignedIn() || host.adminOnlySession)
-                && (host.adminAccount || host.adminOnlySession
-                || (host.isDebugBuild() && host.adminAccess));
+        // Admin tools belong only to the reserved campus moderator account.
+        return host.adminOnlySession || (host.isSignedIn()
+                && Constants.STRICT_ADMIN_EMAIL.equalsIgnoreCase(host.currentStudentEmail));
     }
 
     // Go back to the screen that opened Admin.
     public void exitAdminMode() {
         boolean fromAuth = host.adminOnlySession;
+        stopLiveStudentListener();
         host.adminAccess = false;
         host.adminOnlySession = false;
         host.clearSensitiveVerification();
@@ -65,6 +69,7 @@ public class Admin {
     // Clear both flags so the passcode is needed again.
     public void lockAdminMode() {
         boolean fromAuth = host.adminOnlySession;
+        stopLiveStudentListener();
         host.adminAccess = false;
         host.adminOnlySession = false;
         host.clearSensitiveVerification();
@@ -1277,21 +1282,17 @@ public class Admin {
                 }).show());
         heading.addView(range);
         content.addView(heading);
-        content.addView(host.ui.bodyText("These are quick on-device numbers. Marketplace analytics shows the full Firestore view.",
+        content.addView(host.ui.bodyText("Live students and the moderation queue update from Firebase. Other numbers are a quick on-device view.",
                 host.muted, 10));
-        content.addView(host.ui.bodyText("On-device = saved on this phone · Marketplace = synced listings · Needs review = open reports.",
+        content.addView(host.ui.bodyText("Live students = online now in Firebase. On-device = saved on this phone · Marketplace = synced listings · Needs review = open reports.",
                 host.muted, 10));
         long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
-        int students = 0, live = 0;
-        for (java.util.Map.Entry<String, ?> entry : com.campustrade.auth.data.SecurePrefs.get(host, MainActivity.PREFS + "_profiles").getAll().entrySet()) {
-            if (!host.adminLast24Hours && entry.getKey().startsWith("full_name:")) students++;
-            if (host.adminLast24Hours && entry.getKey().startsWith("last_active:") && entry.getValue() instanceof Long
-                    && (Long) entry.getValue() >= cutoff) students++;
-        }
+        int live = 0;
         for (MainActivity.Product product : host.products) if (!product.hidden && product.status.equals("Available")
                 && (!host.adminLast24Hours || product.createdTime >= cutoff)) live++;
+        startLiveStudentListener();
         LinearLayout first = host.ui.horizontal();
-        first.addView(adminMetric("team", students, "Active students", "On-device", host.blue), adminCellParams(false));
+        first.addView(adminMetric("team", liveStudents, "Live students", "Online now", host.blue), adminCellParams(false));
         first.addView(adminMetric("bag", live, "Live listings", "Marketplace", host.blue), adminCellParams(true));
         content.addView(first);
         LinearLayout second = host.ui.horizontal();
@@ -1541,6 +1542,45 @@ public class Admin {
         }
     }
 
+    private void startLiveStudentListener() {
+        if (presenceListener != null) return;
+        presenceListener = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                .collection("users").whereEqualTo("online", true).limit(500)
+                .addSnapshotListener((snap, error) -> {
+                    if (error != null) {
+                        android.util.Log.w("CampusTrade", "presence listener: " + error.getMessage());
+                        return;
+                    }
+                    if (snap == null || host.isDestroyed() || host.isFinishing()) return;
+                    long now = System.currentTimeMillis();
+                    int count = 0;
+                    for (com.google.firebase.firestore.DocumentSnapshot doc : snap.getDocuments()) {
+                        String email = doc.getString("stuEmail");
+                        if (email == null || email.isEmpty()
+                                || Constants.STRICT_ADMIN_EMAIL.equalsIgnoreCase(email)) continue;
+                        String status = doc.getString("accountStatus");
+                        if (status != null && (status.equalsIgnoreCase("suspended")
+                                || status.equalsIgnoreCase("deactivated")
+                                || status.equalsIgnoreCase("deleted"))) continue;
+                        Long lastActive = doc.getLong("lastActive");
+                        if (lastActive == null || now - lastActive > 180000) continue;
+                        count++;
+                    }
+                    liveStudents = count;
+                    if (liveStudentsValue != null) {
+                        liveStudentsValue.setText(String.valueOf(count));
+                    }
+                });
+    }
+
+    private void stopLiveStudentListener() {
+        if (presenceListener != null) {
+            presenceListener.remove();
+            presenceListener = null;
+        }
+        liveStudentsValue = null;
+    }
+
     private LinearLayout.LayoutParams adminCellParams(boolean right) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
         params.topMargin = host.ui.dp(10);
@@ -1574,6 +1614,10 @@ public class Admin {
         value.setPadding(0, host.ui.dp(8), 0, host.ui.dp(2));
         metric.addView(value);
         metric.addView(host.ui.bodyText(label, host.muted, 11));
+        if (icon.equals("team")) {
+            liveStudentsValue = value;
+            value.setText(String.valueOf(liveStudents));
+        }
         metric.setOnClickListener(v -> {
             if (icon.equals("flag")) host.showAppScreen("AdminReports");
             else if (icon.equals("bag")) {
@@ -1582,6 +1626,8 @@ public class Admin {
             } else if (icon.equals("chat")) {
                 if (host.adminOnlySession) host.ui.showSimpleMessage(label, count + " campus groups in this on-device overview.");
                 else host.showAppScreen("Groups");
+            } else if (icon.equals("team")) {
+                host.ui.showSimpleMessage(label, liveStudents + " student(s) are online right now.");
             } else host.ui.showSimpleMessage(label, count + " student profiles saved on this phone.");
         });
         return metric;

@@ -308,6 +308,18 @@ public class AuthRepository {
                 .update("lastActive", System.currentTimeMillis(), "updatedAt", Timestamp.now());
     }
 
+    /** Update the live presence shown on the moderator dashboard. */
+    public void setPresence(String uid, boolean online) {
+        if (uid == null || uid.isEmpty()) return;
+        java.util.Map<String, Object> fields = new HashMap<>();
+        fields.put("online", online);
+        fields.put("lastActive", System.currentTimeMillis());
+        fields.put("updatedAt", Timestamp.now());
+        db.collection("users").document(uid).update(fields)
+                .addOnFailureListener(e -> android.util.Log.w("CampusTrade",
+                        "presence update failed: " + e.getMessage()));
+    }
+
     /** Used by settings and admin account tools. */
     public void setAccountStatus(String uid, String status, SimpleCallback cb) {
         if (uid == null || uid.isEmpty()) {

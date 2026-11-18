@@ -56,7 +56,7 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 
 - Buyer/seller chat with Firestore persistence and local fallback
 - Unread indicators, Sent/Seen receipts, typing hints, conversation filtering and push notifications
-- Inline helper typing ellipsis inside the message list rather than in the header
+- Animated helper typing ellipsis inside the message list rather than in the header
 - Live moderator chat with students from the admin chat section
 - Admin chats close when the linked report is resolved or after one hour of inactivity
 - Moderators can reopen an expired thread for an active report; students can email admin instead
@@ -65,6 +65,7 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Cross-device pickup scheduling with a public meeting point and both-student confirmation
 - Payment preference limited to cash on collection or EFT arranged directly between students
 - No online card, instant-EFT, checkout or payout processing
+- Checkout phone numbers are capped at 10 digits and validated before an order is sent
 - Completed-order reviews with one review per student per order
 - Completed-order return requests: reason, seller approval or decline, buyer withdrawal and return status
 - Return settlements are arranged directly between students; CampusTrade does not process refunds
@@ -78,6 +79,8 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 ### Study groups
 
 - Searchable public and private study groups, with name/module discovery and Firestore refresh on search
+- Suggested study partners are limited to the signed-in student's programme and year
+- The group creator can delete the group and its feed for every member
 - Private group join requests synced to Firestore for owner approval
 - Group notes shared from Home or Study hub, with the group feed opening after sharing
 - Members-only group feeds, deadlines and notifications
@@ -99,6 +102,7 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Mandatory reason capture for admin listing removal, saved to the tombstone, seller notification and audit log
 - Three-strike content warnings for misleading, illicit or scam-like listings, chats, group posts and wanted posts
 - The third content warning pauses posting and opens a moderator review; students can appeal from Settings
+- Direct Send feedback form in Settings, with the submitted feedback shown in the admin queue
 - Student feedback shown as named cards with category, date and message instead of backend IDs
 - Admin action audit trail in Firestore
 
@@ -117,6 +121,7 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 ### Administrator analytics
 
 - Firestore-based marketplace KPIs, using the same source as the seller dashboard
+- Live student count based on foreground presence, updating as students open, background or log out
 - Registered and active users
 - Sellers and buyers
 - Listings, active listings, reserved listings and sold listings
@@ -150,13 +155,9 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 
 ## Administrator access
 
-Administrator analytics and moderation use a trusted Firestore role:
+The reserved `eduv4941658@vossie.net` account opens the strict admin-only shell automatically. Normal student accounts no longer show an Admin login, passcode screen, moderation drawer or Administration settings.
 
-1. In Firestore, open `users/{uid}` for the moderator account.
-2. Add `isAdmin: true`.
-3. Sign in again.
-
-The reserved `eduv4941658@vossie.net` account is recognised as a moderator by the Firestore rules and opens the strict admin-only shell automatically. Other moderators can be promoted with `isAdmin: true`. The debug passcode remains an extra local gate for demo builds, but Firestore rules still validate moderator access for marketplace-wide analytics and admin actions.
+Firestore rules still validate the moderator role for marketplace-wide analytics and admin actions. Sign in with the reserved moderator account to use the admin interface.
 
 ## Build
 

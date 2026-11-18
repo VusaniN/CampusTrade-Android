@@ -276,6 +276,17 @@ public class MainActivity extends Activity {
     final ArrayList<TransactionRecord> transactions = new ArrayList<>();
     int savedListings = 0;
     int messageCount = 0;
+    private final android.os.Handler presenceHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable presenceTick = new Runnable() {
+        @Override public void run() {
+            if (currentUid == null || currentUid.isEmpty() || isFinishing() || isDestroyed()) return;
+            if (!com.campustrade.auth.data.SecurePrefs.get(MainActivity.this, PREFS)
+                    .getBoolean("signed_in", false)) return;
+            new AuthRepository().setPresence(currentUid, true);
+            presenceHandler.postDelayed(this, 60000);
+        }
+    };
     static final int LISTING_PHOTO_REQUEST = 71;
     static final int LISTING_DOCUMENT_REQUEST = 73;
     static final int PROFILE_PHOTO_REQUEST = 74;
@@ -574,6 +585,22 @@ public class MainActivity extends Activity {
                 .putFloat("font_scale", clean).commit();
         applyFontScaleToResources(clean);
         recreate();
+    }
+
+    void startPresenceTracking() {
+        if (currentUid == null || currentUid.isEmpty()) return;
+        presenceHandler.removeCallbacks(presenceTick);
+        new AuthRepository().setPresence(currentUid, true);
+        presenceHandler.postDelayed(presenceTick, 60000);
+    }
+
+    void stopPresenceTracking() {
+        presenceHandler.removeCallbacks(presenceTick);
+    }
+
+    void markOffline() {
+        if (currentUid == null || currentUid.isEmpty()) return;
+        new AuthRepository().setPresence(currentUid, false);
     }
 
     boolean isDebugBuild() {
@@ -1352,6 +1379,8 @@ public class MainActivity extends Activity {
 
     @Override protected void onStop() {
         super.onStop();
+        stopPresenceTracking();
+        if (!isChangingConfigurations()) markOffline();
         if (!unlocking && !currentStudentEmail.isEmpty()
                 && com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false)) needsUnlock = true;
     }
@@ -1401,8 +1430,9 @@ public class MainActivity extends Activity {
         if (!unlocking) needsUnlock = false;
         if (signedIn && !unlocking) {
             refreshAdminRole();
-            if (!currentUid.isEmpty() && !adminOnlySession) {
-                safety.syncContentSanctions(currentStudentEmail, currentUid);
+            if (!currentUid.isEmpty()) {
+                startPresenceTracking();
+                if (!adminOnlySession) safety.syncContentSanctions(currentStudentEmail, currentUid);
             }
         }
     }

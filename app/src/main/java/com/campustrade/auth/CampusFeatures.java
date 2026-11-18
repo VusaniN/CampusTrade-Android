@@ -131,6 +131,12 @@ public final class CampusFeatures {
         Group g = group(id); actor = email(actor); require(!g.owner.equals(actor), "The group owner can't leave");
         g.members.remove(actor); g.requests.remove(actor);
     }
+    // Only the creator can remove the whole group.
+    public void deleteGroup(String id, String actor) {
+        Group g = group(id);
+        require(g.owner.equals(email(actor)), "Only the group owner can delete it");
+        groups.remove(g);
+    }
     // Only members can post. Deadlines and events also need a future date.
     public GroupPost post(String id, String actor, String kind, String body, long due, long now) {
         Group g = group(id); actor = email(actor);

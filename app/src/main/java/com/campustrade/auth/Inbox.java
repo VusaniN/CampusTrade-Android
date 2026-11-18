@@ -41,6 +41,9 @@ public class Inbox {
     private com.google.firebase.firestore.ListenerRegistration typingListener;
     private long lastTypingPing = 0;
     private boolean helperThinking = false;
+    private android.os.Handler helperDotsHandler;
+    private Runnable helperDotsRunnable;
+    private TextView helperDotsView;
     private static final long ADMIN_CHAT_IDLE_MS = 60L * 60L * 1000L;
 
     public Inbox(MainActivity host) {
@@ -125,7 +128,9 @@ public class Inbox {
         // Mark only my received messages as read, then save.
         markRead.setOnClickListener(v -> {
             for (MainActivity.ChatMessage m : host.chatMessages) if (m.recipient.equals(host.currentStudentEmail)) m.read = true;
+            host.messageCount = 0;
             saveMessages();
+            Toast.makeText(host, "All messages marked as read.", Toast.LENGTH_SHORT).show();
             host.showAppScreen("Inbox");
         });
         heading.addView(markRead);
@@ -779,6 +784,39 @@ public class Inbox {
         saveMessages();
     }
 
+    private void startHelperDotsAnimation(TextView dots) {
+        stopHelperDotsAnimation();
+        if (dots == null) return;
+        helperDotsView = dots;
+        helperDotsHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        final String[] frames = {".", "..", "...", ".."};
+        final int[] frame = {0};
+        helperDotsRunnable = new Runnable() {
+            @Override public void run() {
+                if (!helperThinking || helperDotsView != dots || dots.getParent() == null) return;
+                frame[0] = (frame[0] + 1) % frames.length;
+                dots.setText(frames[frame[0]]);
+                float drift = (frame[0] - 1.5f) * host.ui.dp(2);
+                dots.animate().translationX(drift).setDuration(260).start();
+                if (helperDotsHandler != null) helperDotsHandler.postDelayed(this, 320);
+            }
+        };
+        helperDotsRunnable.run();
+    }
+
+    private void stopHelperDotsAnimation() {
+        if (helperDotsHandler != null) {
+            helperDotsHandler.removeCallbacksAndMessages(null);
+            helperDotsHandler = null;
+        }
+        if (helperDotsView != null) {
+            helperDotsView.animate().cancel();
+            helperDotsView.setTranslationX(0f);
+        }
+        helperDotsView = null;
+        helperDotsRunnable = null;
+    }
+
     // Use live AI answers but keep the CampusTrade Helper name.
     // If it fails, fall back to the offline keyword answers.
     void scheduleHelperReply(String question, final LinearLayout messages, final ScrollView scroll,
@@ -806,6 +844,7 @@ public class Inbox {
         messages.postDelayed(() -> {
             if (host.isDestroyed() || host.isFinishing()) return;
             helperThinking = false;
+            stopHelperDotsAnimation();
             if (typingStatus != null) typingStatus.setText("Virtual assistant");
             host.chatMessages.add(new MainActivity.ChatMessage(HelperBot.PEER, host.currentStudentEmail, HelperBot.NAME,
                     answer, System.currentTimeMillis(), true));
@@ -1024,6 +1063,7 @@ public class Inbox {
                 typingListener = null;
             }
             helperThinking = false;
+            stopHelperDotsAnimation();
             String returnTab = host.chatReturnTab == null || host.chatReturnTab.isEmpty()
                     ? "Inbox" : host.chatReturnTab;
             host.openChatPeer = "";
@@ -1230,11 +1270,15 @@ public class Inbox {
             bubble.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
             TextView dots = host.ui.bodyText("…", host.muted, 20);
             dots.setContentDescription("CampusTrade Helper is typing");
+            dots.setGravity(Gravity.CENTER);
+            dots.setMinWidth(host.ui.dp(32));
+            dots.setTypeface(android.graphics.Typeface.MONOSPACE);
             bubble.addView(dots);
             line.addView(bubble, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             container.addView(line, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            startHelperDotsAnimation(dots);
             shown++;
         }
         if (shown == 0) {

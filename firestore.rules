@@ -82,7 +82,8 @@ service cloud.firestore {
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(['isAdmin', 'rating', 'uid', 'createdAt', 'stuEmail', 'studentNumber'])
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['stuName', 'course', 'year', 'profileImage', 'lastActive', 'updatedAt', 'fcmToken']);
+             .hasOnly(['stuName', 'course', 'year', 'profileImage', 'lastActive', 'online', 'updatedAt', 'fcmToken'])
+        && (!('online' in request.resource.data) || request.resource.data.online is bool);
       // Owner can deactivate or soft-delete their own account.
       allow update: if isOwner(userId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountStatus', 'updatedAt'])
@@ -264,8 +265,7 @@ service cloud.firestore {
         && request.resource.data.buyerName.size() >= 2
         && request.resource.data.buyerName.size() <= 120
         && request.resource.data.buyerPhone is string
-        && request.resource.data.buyerPhone.size() >= 7
-        && request.resource.data.buyerPhone.size() <= 30
+        && request.resource.data.buyerPhone.matches('[0-9]{10}')
         && request.resource.data.reference is string
         && request.resource.data.reference.size() <= 300
         && request.resource.data.deliveryMethod in ['Campus pickup', 'Local delivery']

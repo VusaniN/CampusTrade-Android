@@ -136,6 +136,8 @@ public class Profile {
         support.addView(settingsOption("mail", "Email campus admin", "Use your mail app for a formal report", "Compose", v -> emailCampusAdmin()));
         host.ui.addMenuDivider(support);
         support.addView(settingsOption("chat", "Help & support", "Ask the helper or message the campus team", "Open", v -> showHelpSupport()));
+        host.ui.addMenuDivider(support);
+        support.addView(settingsOption("compose", "Send feedback", "Report a bug, problem or idea to the campus team", "Write", v -> showFeedbackForm()));
         content.addView(support);
 
         settingsHeading(content, "Account");
@@ -148,21 +150,6 @@ public class Profile {
         host.ui.addMenuDivider(accountActions);
         accountActions.addView(settingsOption("exit", "Delete account", "Remove your public profile and sign out", "Open", v -> confirmDelete()));
         content.addView(accountActions);
-
-        if (host.isDebugBuild() || host.adminAccount) {
-            settingsHeading(content, "Administration");
-            LinearLayout admin = host.ui.card(Color.WHITE, 16, 0);
-            admin.addView(settingsOption("shield", host.adminAccount ? "Admin dashboard" : "Admin login",
-                    host.adminAccount ? "Moderator account" : "Moderator passcode required",
-                    "Open", v -> {
-                        if (host.adminAccount) host.showAppScreen("Admin");
-                        else host.admin.promptAdminPasscode();
-                    }));
-            host.ui.addMenuDivider(admin);
-            admin.addView(settingsOption("checklist", "Marketplace analytics", "Users, listings, sales and reports", "Open",
-                    v -> host.showAppScreen("AdminAnalytics")));
-            content.addView(admin);
-        }
 
         settingsHeading(content, "Legal");
         LinearLayout legal = host.ui.card(Color.WHITE, 16, 0);
@@ -656,6 +643,79 @@ public class Profile {
         });
     }
 
+    /** Direct feedback form, also reachable from Help & support. */
+    public void showFeedbackForm() {
+        Dialog page = new Dialog(host);
+        page.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout root = new LinearLayout(host);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(host.page);
+        root.addView(host.ui.pageHeader("Send feedback", "Tell the campus team what to improve", page::dismiss));
+        ScrollView scroll = new ScrollView(host);
+        LinearLayout content = new LinearLayout(host);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(host.ui.dp(20), host.ui.dp(4), host.ui.dp(20), host.ui.dp(20));
+        scroll.addView(content);
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        LinearLayout intro = host.ui.card(host.surface(), 14, host.ui.dp(14));
+        intro.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+        intro.addView(host.ui.titleText("Help us make CampusTrade better", host.text, 15));
+        intro.addView(host.ui.bodyText("Your message goes to the campus moderation team. You can report a bug, suggest an improvement or ask for help.",
+                host.muted, 12));
+        content.addView(intro);
+
+        Spinner type = host.ui.listingSelector(content, "Type", new String[] {"App issue", "Suggestion", "Account help", "Other"});
+        EditText detail = host.ui.listingField(content, "Message", "What happened? Include the screen or order involved.",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        detail.setSingleLine(false);
+        detail.setGravity(Gravity.TOP | Gravity.START);
+        detail.setMinLines(5);
+        detail.setFilters(new InputFilter[] {new InputFilter.LengthFilter(1000)});
+        detail.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(150)));
+        Button send = host.ui.primaryButton("Send feedback");
+        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
+        sendParams.topMargin = host.ui.dp(14);
+        content.addView(send, sendParams);
+        send.setOnClickListener(v -> {
+            String body = host.ui.text(detail).trim();
+            if (body.length() < 10) {
+                detail.setError("Add at least 10 characters");
+                return;
+            }
+            String uid = CloudSync.uid(host);
+            if (uid == null || uid.isEmpty()) {
+                Toast.makeText(host, "Sign in again to send feedback.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            send.setEnabled(false);
+            send.setText("Sending...");
+            new RatingRepository().report(uid, host.currentStudentEmail, host.currentStudentName,
+                    type.getSelectedItem().toString(), body, new RatingRepository.DoneCallback() {
+                        @Override public void onOk() {
+                            if (host.isDestroyed() || host.isFinishing()) return;
+                            page.dismiss();
+                            Toast.makeText(host, "Feedback sent to the campus team.", Toast.LENGTH_SHORT).show();
+                        }
+                        @Override public void onBad(String message) {
+                            if (host.isDestroyed() || host.isFinishing()) return;
+                            send.setEnabled(true);
+                            send.setText("Send feedback");
+                            Toast.makeText(host, "Feedback didn't send: " + message, Toast.LENGTH_LONG).show();
+                        }
+                    });
+        });
+        page.setContentView(root);
+        page.show();
+        Window window = page.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(host.page));
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        }
+    }
+
     // Help is a full page: helper and common questions first, then feedback.
     public void showHelpSupport() {
         Dialog page = new Dialog(host);
@@ -793,10 +853,8 @@ public class Profile {
             if (host.market.ownsListing(p)) ownedListings++;
             if (p.savedBy.contains(host.currentStudentEmail)) host.savedListings++;
         }
-        host.messageCount = 0;
-        for (MainActivity.ChatMessage m : host.chatMessages) {
-            if (m.sender.equals(host.currentStudentEmail) || m.recipient.equals(host.currentStudentEmail)) host.messageCount++;
-        }
+        host.messageCount = host.inbox.unreadMessages();
+        int unreadMessages = host.messageCount;
         LinearLayout profile = host.ui.card(Color.WHITE, 20, host.ui.dp(18));
         profile.setGravity(Gravity.CENTER_HORIZONTAL);
         View avatar = profileAvatar(host.ui.dp(84), 28, Color.WHITE, host.blue);
@@ -852,7 +910,7 @@ public class Profile {
         View divider2 = new View(host);
         divider2.setBackgroundColor(host.line);
         stats.addView(divider2, new LinearLayout.LayoutParams(host.ui.dp(1), host.ui.dp(36)));
-        TextView messagesStat = host.ui.metric(String.valueOf(host.messageCount), "Messages");
+        TextView messagesStat = host.ui.metric(String.valueOf(unreadMessages), "Unread");
         messagesStat.setOnClickListener(v -> host.showAppScreen("Inbox"));
         host.ui.attachPressAnimation(messagesStat);
         stats.addView(messagesStat, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -903,6 +961,8 @@ public class Profile {
         Button logout = host.ui.secondaryButton("Log out");
         logout.setOnClickListener(v -> {
             host.stopChatListeners();
+            host.stopPresenceTracking();
+            host.markOffline();
             new AuthRepository().logout();
             host.currentUid = "";
             host.adminAccount = false;
@@ -1034,6 +1094,8 @@ public class Profile {
 
     private void signOutLocal() {
         host.stopChatListeners();
+        host.stopPresenceTracking();
+        host.markOffline();
         new AuthRepository().logout();
         host.currentUid = "";
         host.currentStudentEmail = "";

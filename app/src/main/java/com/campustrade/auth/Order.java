@@ -1069,7 +1069,10 @@ public class Order {
         form.addView(host.ui.label("Buyer details"));
         EditText buyerNameInput = host.ui.dialogInput("Buyer name", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
         buyerNameInput.setText(host.currentStudentName);
-        EditText buyerPhoneInput = host.ui.dialogInput("Phone number", InputType.TYPE_CLASS_PHONE);
+        EditText buyerPhoneInput = host.ui.dialogInput("Phone number (10 digits)", InputType.TYPE_CLASS_PHONE);
+        buyerPhoneInput.setSingleLine(true);
+        buyerPhoneInput.setKeyListener(android.text.method.DigitsKeyListener.getInstance("0123456789"));
+        buyerPhoneInput.setFilters(new InputFilter[] {new InputFilter.LengthFilter(10)});
         EditText referenceInput = host.ui.dialogInput("Collection note (optional)", InputType.TYPE_CLASS_TEXT);
         form.addView(buyerNameInput);
         form.addView(buyerPhoneInput);
@@ -1127,14 +1130,14 @@ public class Order {
         pay.setOnClickListener(v -> {
             String method = freeItem ? "Free collection" : selectedMethod[0].label;
             String buyer = host.ui.text(buyerNameInput).trim();
-            String phone = host.ui.text(buyerPhoneInput).trim();
+            String phone = host.ui.text(buyerPhoneInput).replaceAll("[^0-9]", "").trim();
             String reference = host.ui.text(referenceInput).trim();
             if (buyer.length() < 2) {
                 buyerNameInput.setError("Enter the buyer name");
                 return;
             }
             if (!validPaymentPhone(phone)) {
-                buyerPhoneInput.setError("Enter a valid phone number");
+                buyerPhoneInput.setError("Enter a 10-digit phone number");
                 checkoutScroll.smoothScrollTo(0, buyerPhoneInput.getTop());
                 buyerPhoneInput.requestFocus();
                 return;
@@ -1359,8 +1362,9 @@ public class Order {
     }
 
     static boolean validPaymentPhone(String phone) {
+        if (phone == null) return false;
         String compact = phone.replaceAll("[\\s()-]", "");
-        return compact.matches("\\+?[0-9]{8,15}");
+        return compact.matches("[0-9]{10}");
     }
 
     public void showPaymentInformation(String topic) {
