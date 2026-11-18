@@ -9,6 +9,7 @@ import android.widget.TextView;
 
 import com.bumptech.glide.Glide;
 import com.campustrade.auth.data.CloudSync;
+import com.campustrade.auth.data.HelperBot;
 import com.campustrade.auth.data.SecurePrefs;
 import com.google.firebase.firestore.FirebaseFirestore;
 
@@ -19,36 +20,54 @@ final class StudentAvatar {
 
     private StudentAvatar() { }
 
-    static View create(MainActivity host, String email, String name, int textSize,
+    static View create(MainActivity host, String emailOrUid, String name, int textSize,
                        int textColor, int background) {
         FrameLayout holder = new FrameLayout(host);
         String display = name == null || name.trim().isEmpty() ? "Student" : name.trim();
         holder.setContentDescription(display + " profile photo");
-        String local = cachedImage(host, email);
+        String local = cachedImage(host, emailOrUid);
         render(host, holder, local, display, textSize, textColor, background);
-        if (email == null || !email.contains("@")) return holder;
+        if (emailOrUid == null || emailOrUid.trim().isEmpty()) return holder;
+        if (HelperBot.PEER.equalsIgnoreCase(emailOrUid)
+                || Constants.ADMIN_CHAT_EMAIL.equalsIgnoreCase(emailOrUid)) return holder;
 
-        CloudSync.peerUid(host, email, new CloudSync.StrCallback() {
-            @Override public void onOk(String uid) {
-                FirebaseFirestore.getInstance().collection("publicProfiles").document(uid).get()
-                        .addOnSuccessListener(profile -> {
-                            String image = profile.getString("profileImage");
-                            if (image == null || image.trim().isEmpty()) return;
-                            cacheImage(host, email, image);
-                            String freshName = profile.getString("stuName");
-                            String shownName = freshName == null || freshName.trim().isEmpty()
-                                    ? display : freshName.trim();
-                            host.runOnUiThread(() -> {
-                                if (host.isDestroyed() || host.isFinishing()) return;
-                                render(host, holder, image, shownName,
-                                        textSize, textColor, background);
-                            });
-                        });
-            }
+        if (emailOrUid.contains("@")) {
+            CloudSync.peerUid(host, emailOrUid, new CloudSync.StrCallback() {
+                @Override public void onOk(String uid) {
+                    loadProfile(host, holder, uid, emailOrUid, display,
+                            textSize, textColor, background);
+                }
 
-            @Override public void onBad(String message) { }
-        });
+                @Override public void onBad(String message) { }
+            });
+        } else {
+            loadProfile(host, holder, emailOrUid, emailOrUid, display,
+                    textSize, textColor, background);
+        }
         return holder;
+    }
+
+    private static void loadProfile(MainActivity host, FrameLayout holder, String uid,
+                                    String cacheId, String fallbackName,
+                                    int textSize, int textColor, int background) {
+        FirebaseFirestore.getInstance().collection("publicProfiles").document(uid).get()
+                .addOnSuccessListener(profile -> {
+                    String image = profile.getString("profileImage");
+                    if (image == null || image.trim().isEmpty()) return;
+                    cacheImage(host, cacheId, image);
+                    String profileEmail = profile.getString("stuEmail");
+                    if (profileEmail != null && profileEmail.contains("@")) {
+                        cacheImage(host, profileEmail, image);
+                    }
+                    String freshName = profile.getString("stuName");
+                    String shownName = freshName == null || freshName.trim().isEmpty()
+                            ? fallbackName : freshName.trim();
+                    host.runOnUiThread(() -> {
+                        if (host.isDestroyed() || host.isFinishing()) return;
+                        render(host, holder, image, shownName,
+                                textSize, textColor, background);
+                    });
+                });
     }
 
     private static void render(MainActivity host, FrameLayout holder, String image, String name,

@@ -178,9 +178,10 @@ public class Inbox {
             row.setPadding(host.ui.dp(14), host.ui.dp(12), host.ui.dp(14), host.ui.dp(12));
             row.setBackground(host.ui.bottomRule(unread > 0 ? host.blue : host.line));
             int avatarColor = (peer.hashCode() & 1) == 0 ? host.blue : host.green;
-            TextView avatar = host.ui.titleText(host.ui.initials(fullName), avatarColor, 14);
-            avatar.setGravity(Gravity.CENTER);
-            avatar.setBackground(host.ui.round(avatarColor == host.blue ? Color.rgb(225, 236, 255) : Color.rgb(229, 247, 239), 999));
+            String avatarKey = peer.contains("@") ? peer : CloudSync.emailForUid(host, peer);
+            if (avatarKey == null || avatarKey.isEmpty()) avatarKey = peer;
+            View avatar = StudentAvatar.create(host, avatarKey, fullName, 14, avatarColor,
+                    avatarColor == host.blue ? Color.rgb(225, 236, 255) : Color.rgb(229, 247, 239));
             row.addView(avatar, new LinearLayout.LayoutParams(host.ui.dp(44), host.ui.dp(44)));
             LinearLayout copy = new LinearLayout(host);
             copy.setOrientation(LinearLayout.VERTICAL);
@@ -1057,9 +1058,10 @@ public class Inbox {
                 : peer.equals(HelperBot.PEER) ? HelperBot.NAME : host.studentName(peer);
         int avatarColor = isAdminConversation(peer) ? host.blue
                 : peer.equals(HelperBot.PEER) ? host.blue : (peer.hashCode() & 1) == 0 ? host.blue : host.green;
-        TextView avatar = host.ui.titleText(host.ui.initials(conversationName), avatarColor, 12);
-        avatar.setGravity(Gravity.CENTER);
-        avatar.setBackground(host.ui.round(avatarColor == host.blue ? Color.rgb(225, 236, 255) : Color.rgb(229, 247, 239), 999));
+        String avatarKey = peer.contains("@") ? peer : CloudSync.emailForUid(host, peer);
+        if (avatarKey == null || avatarKey.isEmpty()) avatarKey = peer;
+        View avatar = StudentAvatar.create(host, avatarKey, conversationName, 12, avatarColor,
+                avatarColor == host.blue ? Color.rgb(225, 236, 255) : Color.rgb(229, 247, 239));
         LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(host.ui.dp(38), host.ui.dp(38));
         avatarParams.leftMargin = host.ui.dp(4);
         header.addView(avatar, avatarParams);
