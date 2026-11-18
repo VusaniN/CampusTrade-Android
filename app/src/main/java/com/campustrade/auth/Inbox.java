@@ -483,7 +483,7 @@ public class Inbox {
                     ? (moderator
                     ? "\nTap here to reopen this conversation."
                     : "\nEmail " + Constants.ADMIN_CHAT_EMAIL + " to open a new report conversation.")
-                    : "\nThis order conversation has ended."));
+                    : (reason.isEmpty() ? "\nThis order conversation has ended." : "")));
         }
     }
 
@@ -1316,7 +1316,11 @@ public class Inbox {
                 lastDay = day;
             }
             if (isClosureMessage(m.body)) {
-                container.addView(chatEventCard("Chat closed", closureReason(m.body)));
+                // The persistent notice below the messages already explains an active closure.
+                // Keep the timeline card only when the chat has since been reopened.
+                if (!chatClosed(peer)) {
+                    container.addView(chatEventCard("Chat closed", closureReason(m.body)));
+                }
                 shown++;
                 continue;
             }
