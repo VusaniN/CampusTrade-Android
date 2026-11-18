@@ -994,6 +994,13 @@ public class Community {
                 Toast.makeText(host, "Choose a future deadline.", Toast.LENGTH_LONG).show();
                 return;
             }
+            if (host.safety.postingPausedDialog(host.currentStudentEmail)) return;
+            CampusSafety.ContentScan scan = host.safety.reviewContent(host.currentStudentEmail,
+                    host.currentUid, "group post", content);
+            if (scan.flagged) {
+                host.safety.warnIfFlagged(scan, null);
+                return;
+            }
             try {
                 final CampusFeatures.GroupPost[] created = {null};
                 host.featureStore.update(f -> {
@@ -1246,6 +1253,13 @@ public class Community {
             if (!amount.matches("\\d+(\\.\\d{1,2})?")) {
                 if (budget[0].equals("Custom") && customBudget[0] != null) customBudget[0].setError("Enter a valid amount");
                 else Toast.makeText(host, "Choose a valid budget.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (host.safety.postingPausedDialog(host.currentStudentEmail)) return;
+            CampusSafety.ContentScan scan = host.safety.reviewContent(host.currentStudentEmail,
+                    host.currentUid, "wanted post", item + "\n" + details);
+            if (scan.flagged) {
+                host.safety.warnIfFlagged(scan, null);
                 return;
             }
             try {
@@ -1697,7 +1711,8 @@ public class Community {
         if (tab.equals("Academics")) return "calendar";
         if (tab.equals("Admin")) return "exit";
         if (tab.equals("Groups") || tab.equals("Wanted") || tab.equals("SearchAlerts")) return "plus";
-        if (tab.equals("Notifications") || tab.equals("Payments") || tab.equals("AdminReports") || tab.equals("Offers")) return "back";
+        if (tab.equals("Notifications") || tab.equals("Payments") || tab.startsWith("Admin")
+                || tab.equals("Offers")) return "back";
         return "cart";
     }
 

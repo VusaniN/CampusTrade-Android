@@ -44,9 +44,14 @@ service cloud.firestore {
 
     // isAdmin is set in the Firebase console, never by the client.
     function isAdmin() {
+      // The reserved moderator account always has admin rights. Other
+      // moderators are promoted explicitly in users/{uid}.
       return signedIn()
-        && exists(/databases/$(db)/documents/users/$(request.auth.uid))
-        && get(/databases/$(db)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+        && (
+          request.auth.token.email.lower() == 'eduv4941658@vossie.net'
+          || (exists(/databases/$(db)/documents/users/$(request.auth.uid))
+              && get(/databases/$(db)/documents/users/$(request.auth.uid)).data.isAdmin == true)
+        );
     }
 
     function isShortText(value, maxLen) {
@@ -135,6 +140,9 @@ service cloud.firestore {
         && request.resource.data.createdAt is timestamp
         && request.resource.data.expiresAt is timestamp
         && request.resource.data.negotiable is bool
+        && request.resource.data.quantity is number
+        && request.resource.data.quantity >= 1
+        && request.resource.data.quantity <= 999
         && request.resource.data.viewCount is number
         && request.resource.data.viewCount >= 0
         && request.resource.data.favouriteCount is number
@@ -144,18 +152,23 @@ service cloud.firestore {
              ['sellerID', 'sellerName', 'listingN', 'description', 'specs', 'price', 'category',
               'condition', 'location', 'delivery', 'status', 'imageURL', 'photos',
               'documentURL', 'documentName', 'documentMime', 'documentSize', 'createdAt',
-              'expiresAt', 'negotiable', 'viewCount', 'favouriteCount', 'updatedAt']);
+              'expiresAt', 'negotiable', 'quantity', 'viewCount', 'favouriteCount', 'updatedAt']);
       allow update: if signedIn()
         && resource.data.sellerID == request.auth.uid
         && request.resource.data.sellerID == resource.data.sellerID
         && request.resource.data.price is number
         && request.resource.data.price >= 0
         && request.resource.data.status in ['AVAILABLE', 'PAUSED', 'SOLD', 'RESERVED', 'ORDERED']
+        && request.resource.data.quantity is number
+        && request.resource.data.quantity >= 0
+        && request.resource.data.quantity <= 999
+        && (request.resource.data.status != 'AVAILABLE' || request.resource.data.quantity > 0)
+        && (request.resource.data.status != 'SOLD' || request.resource.data.quantity == 0)
         && (!("expiresAt" in request.resource.data) || request.resource.data.expiresAt is timestamp)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
              ['sellerName', 'listingN', 'description', 'specs', 'price', 'category', 'condition', 'location',
               'delivery', 'status', 'imageURL', 'photos', 'documentURL', 'documentName',
-              'documentMime', 'documentSize', 'negotiable', 'viewCount', 'favouriteCount',
+              'documentMime', 'documentSize', 'negotiable', 'quantity', 'viewCount', 'favouriteCount',
               'expiresAt', 'updatedAt']);
       // Any signed-in student can add one view count or one favourite count.
       // The seller update above still covers owner edits.
@@ -225,6 +238,7 @@ service cloud.firestore {
              == request.resource.data.sellerId
         && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.status
              == 'AVAILABLE'
+        && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.get('quantity', 1) > 0
         && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.price
              is number
         && request.resource.data.listPrice is number
@@ -652,8 +666,15 @@ service cloud.firestore {
         && exists(/databases/$(db)/documents/listings/$(request.resource.data.listingId))
         && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.sellerID
              == request.resource.data.sellerId
+        && get(/databases/$(db)/documents/listings/$(request.resource.data.listingId)).data.get('quantity', 1) > 0
+        && request.resource.data.get('buyerEmail', request.auth.token.email).lower()
+             == request.auth.token.email.lower()
+        && request.resource.data.get('sellerEmail',
+             get(/databases/$(db)/documents/users/$(request.resource.data.sellerId)).data.stuEmail).lower()
+             == get(/databases/$(db)/documents/users/$(request.resource.data.sellerId)).data.stuEmail.lower()
         && request.resource.data.keys().hasOnly(
-             ['buyerId', 'sellerId', 'listingId', 'amount', 'turn', 'state', 'created', 'expiresAt']);
+             ['buyerId', 'sellerId', 'listingId', 'buyerEmail', 'sellerEmail',
+              'amount', 'turn', 'state', 'created', 'expiresAt']);
       // Offers are a turn-based state machine. Only the student whose turn it is
       // can accept, decline or counter; either participant can cancel; only the
       // seller can close offers when the listing closes.
@@ -816,8 +837,20 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.reporterId == request.auth.uid
         && request.resource.data.state == 'Open';
-      allow read: if isAdmin();
-      allow update, delete: if isAdmin();
+      // A reporter can see their own report and rate the outcome. Moderation
+      // fields remain admin-only.
+      allow read: if isAdmin()
+        || (signedIn() && resource.data.reporterId == request.auth.uid);
+      allow update: if isAdmin()
+        || (signedIn()
+            && resource.data.reporterId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['satisfaction', 'satisfactionComment', 'satisfactionAt', 'satisfactionBy'])
+            && request.resource.data.satisfaction is number
+            && request.resource.data.satisfaction >= 1
+            && request.resource.data.satisfaction <= 5
+            && request.resource.data.satisfactionBy.lower() == request.auth.token.email.lower());
+      allow delete: if isAdmin();
     }
 
     // ---- moderator listing tombstones -------------------------------------
@@ -825,8 +858,47 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if isAdmin()
         && request.resource.data.listingId == listingId
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 8
+        && request.resource.data.removedBy is string
         && request.resource.data.deletedAt is timestamp;
       allow update, delete: if false;
+    }
+
+    // ---- suspensions and content-warning appeals --------------------------
+    match /appeals/{appealId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email.lower() == request.auth.token.email.lower()
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 20
+        && request.resource.data.reason.size() <= 1200
+        && request.resource.data.status == 'Pending'
+        && request.resource.data.createdAt is timestamp;
+      allow read: if isAdmin()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // ---- content safety ----------------------------------------------------
+    match /contentFlags/{flagId} {
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.userEmail.lower() == request.auth.token.email.lower()
+        && request.resource.data.strike is number
+        && request.resource.data.strike >= 1
+        && request.resource.data.strike <= 3
+        && request.resource.data.createdAt is timestamp;
+      allow read: if isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    match /contentSanctions/{userId} {
+      // Moderators issue and clear sanctions. Students can read their own
+      // standing so a cleared appeal reaches every device.
+      allow read: if isAdmin() || isOwner(userId);
+      allow create, update, delete: if isAdmin();
     }
 
     // ---- favourites --------------------------------------------------------

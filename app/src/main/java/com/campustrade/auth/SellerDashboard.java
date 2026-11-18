@@ -339,7 +339,9 @@ public final class SellerDashboard {
             title.setSingleLine(true);
             title.setEllipsize(android.text.TextUtils.TruncateAt.END);
             copy.addView(title);
-            copy.addView(host.ui.bodyText(product.status + " / " + product.favouriteCount + " saves", host.muted, 10));
+            copy.addView(host.ui.bodyText(product.status + " / "
+                    + (product.quantity <= 0 ? "Sold out" : product.quantity + " in stock")
+                    + " / " + product.favouriteCount + " saves", host.muted, 10));
             row.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             row.addView(host.ui.bodyText(product.viewCount + " views", host.blue, 11));
             card.addView(row);
@@ -389,6 +391,8 @@ public final class SellerDashboard {
                 product.updatedTime = time(doc.get("updatedAt"));
                 product.viewCount = (int) number(doc.get("viewCount"));
                 product.favouriteCount = (int) number(doc.get("favouriteCount"));
+                int quantity = (int) number(doc.get("quantity"));
+                product.quantity = quantity <= 0 && status.equals("Available") ? 1 : Math.max(0, quantity);
                 stats.products.add(product);
             }
 

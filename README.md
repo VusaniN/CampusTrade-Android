@@ -16,6 +16,10 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 ### Accounts and profiles
 
 - Campus email registration, verification, login, logout and password reset
+- Year choices match the Eduvos options: 1st Year, 2nd Year, 3rd Year, Higher Certificate, Masters and Honours
+- Verification window with a live countdown, manual resend and automatic resend when it expires
+- Five-minute reset-link window with a one-tap Resend action
+- In-app password change with current password, new password and confirmation
 - Persistent sessions and protected screens
 - Editable name, course and year
 - Profile photo upload with Cloudinary
@@ -23,9 +27,10 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - First-run app tutorial, with the same tour available from Settings → Support → App tutorial
 - Profile picture and member information on the profile screen
 - Public seller profile with active listings, completed sales, rating and reviews
-- Change password by email reset
+- Adjustable app text size with smaller/larger controls
 - Deactivate account and soft-delete account flows
-- Suspended or deactivated accounts are blocked at sign-in
+- Suspended or deactivated accounts are blocked at sign-in and can send an appeal
+- The reserved moderator account opens a strict admin-only shell with no student navigation
 
 ### Marketplace
 
@@ -36,18 +41,25 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - 60-day listing lifetime with a Renew action
 - Multiple listing photos and optional document attachments
 - Category, condition, negotiable price, pickup location and delivery option
+- Editable stock quantity with visible "in stock" labels on cards and details
+- Sold-out listings disappear from the marketplace automatically; the seller can restock to reopen
+- Seller approval and collection verification are blocked while stock is zero
 - Private original-cost record for the seller; not shown in analytics
 - Listing statuses: Available, Reserved, Ordered, Sold, Paused, Draft
 - Search, category filters, price filters, saved-only and my-listings views
 - Sort by newest, lowest price and highest price
 - Listing view counts and favourite counts
 - Firestore-synced favourites per student
-- Sold, removed and paused listings are not shown as available
+- Only available, in-stock listings appear in the public marketplace
 
 ### Messaging and transactions
 
 - Buyer/seller chat with Firestore persistence and local fallback
 - Unread indicators, Sent/Seen receipts, typing hints, conversation filtering and push notifications
+- Inline helper typing ellipsis inside the message list rather than in the header
+- Live moderator chat with students from the admin chat section
+- Admin chats close when the linked report is resolved or after one hour of inactivity
+- Moderators can reopen an expired thread for an active report; students can email admin instead
 - Purchase requests, seller approval, reservations and cancellation requests
 - Cross-device negotiated offers with accept, counteroffer, decline and 24-hour reservations
 - Cross-device pickup scheduling with a public meeting point and both-student confirmation
@@ -75,12 +87,19 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Terms & Conditions acceptance required before login, with the full text available in Settings
 - Clear liability and safe-exchange terms covering trades and meetings outside the application
 - Listing, user and review reports with reasons and details
+- Reports sort newest first and use grey, orange and red severity chips for Low, Medium and High
+- Students can track their own reports in Settings ��' My reports
+- Resolved reports notify the reporter, show the admin reason and request 1-5 satisfaction feedback
+- Report conversations can continue by live admin chat or email
 - Firestore-synced wanted posts and study-group posts
 - Block and unblock students; blocked students are hidden from Marketplace and Inbox
-- Searchable admin moderation queue and report actions
+- Searchable admin moderation queue and report actions with a mandatory resolution reason
+- Searchable student account list with suspend, restore and appeal review
+- Remove a reported review from the cloud ratings collection and close the linked report
+- Mandatory reason capture for admin listing removal, saved to the tombstone, seller notification and audit log
+- Three-strike content warnings for misleading, illicit or scam-like listings, chats, group posts and wanted posts
+- The third content warning pauses posting and opens a moderator review; students can appeal from Settings
 - Student feedback shown as named cards with category, date and message instead of backend IDs
-- Searchable student account list with suspend and restore
-- Remove a reported review from the cloud ratings collection
 - Admin action audit trail in Firestore
 
 ### Seller dashboard
@@ -119,7 +138,10 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - `pickups` - shared pickup time, place and both-student confirmation
 - `chats` - conversation headers and message subcollections with read receipts/typing
 - `ratings` - completed-order reviews; moderators can remove reported ones
-- `reports` - listing, user and review reports
+- `reports` - listing, user and review reports, resolution notes and reporter satisfaction
+- `appeals` - suspended-account and content-warning appeals
+- `contentFlags`, `contentSanctions` - content-warning history and moderator resets
+- `deletedListings` - removal tombstones with the moderator reason
 - `admin_actions` - moderator audit log
 - `studyGroups` - group metadata, membership and post subcollections
 - `wanted`, `searchAlerts` - community features
@@ -134,7 +156,7 @@ Administrator analytics and moderation use a trusted Firestore role:
 2. Add `isAdmin: true`.
 3. Sign in again.
 
-The debug passcode remains available as an extra local gate for demo builds, but Firestore rules still require `isAdmin` for marketplace-wide analytics and admin actions.
+The reserved `eduv4941658@vossie.net` account is recognised as a moderator by the Firestore rules and opens the strict admin-only shell automatically. Other moderators can be promoted with `isAdmin: true`. The debug passcode remains an extra local gate for demo builds, but Firestore rules still validate moderator access for marketplace-wide analytics and admin actions.
 
 ## Build
 

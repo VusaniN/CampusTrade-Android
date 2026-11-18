@@ -14,6 +14,12 @@ public final class Constants {
     // ---- Validation patterns ----
     public static final String PRICE_PATTERN = "[0-9]{1,7}(\\.[0-9]{1,2})?";
 
+    // ---- Staff / support identities ----
+    // This campus account always opens the restricted admin shell.
+    public static final String STRICT_ADMIN_EMAIL = "eduv4941658@vossie.net";
+    // Reserved peer used by students when they start a live admin chat.
+    public static final String ADMIN_CHAT_EMAIL = "admin@campustrade.local";
+
     // ---- Photo uploads ----
     public static final String CLOUD_NAME = "gel8nwzg";
     public static final String CLOUDINARY_PRESET = "campus_trade";

@@ -616,6 +616,9 @@ public class Market {
         listingSection(stepPrice, "Price & collection");
         EditText priceInput = host.ui.listingField(stepPrice, "Price (ZAR)", "0.00",
                 InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        EditText quantityInput = host.ui.listingField(stepPrice, "Quantity available",
+                "How many can you sell? (0 = sold out)", InputType.TYPE_CLASS_NUMBER);
+        quantityInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(3) });
         CheckBox negotiableInput = new CheckBox(host);
         negotiableInput.setText("Price is negotiable");
         negotiableInput.setTextSize(12);
@@ -632,6 +635,7 @@ public class Market {
 
         if (existing != null) {
             titleInput.setText(existing.title); priceInput.setText(existing.price); locationInput.setText(existing.location);
+            quantityInput.setText(String.valueOf(Math.max(0, existing.quantity)));
             descriptionInput.setText(existing.description);
             negotiableInput.setChecked(existing.negotiable);
             host.ui.selectSpinner(conditionInput, existing.condition); host.ui.selectSpinner(deliveryInput,
@@ -719,6 +723,8 @@ public class Market {
             reviewLine(reviewBox, "Title", host.ui.text(titleInput).trim());
             String priceText = host.ui.text(priceInput).trim().isEmpty() ? "0.00" : host.ui.text(priceInput).trim();
             reviewLine(reviewBox, "Price", new BigDecimal(priceText).signum() == 0 ? "Free" : "R" + priceText);
+            reviewLine(reviewBox, "Quantity", host.ui.text(quantityInput).trim().isEmpty()
+                    ? "1" : host.ui.text(quantityInput).trim());
             reviewLine(reviewBox, "Category", selectedCategory[0]);
             reviewLine(reviewBox, "Condition", conditionInput.getSelectedItemPosition() == 0
                     ? "Not set" : conditionInput.getSelectedItem().toString());
@@ -741,6 +747,7 @@ public class Market {
                     && conditionInput.getSelectedItemPosition() > 0
                     && host.ui.text(descriptionInput).trim().length() >= 10
                     && price.matches(Constants.PRICE_PATTERN)
+                    && host.ui.text(quantityInput).trim().matches("[0-9]{1,3}")
                     && (!pickupChosen[0] || !host.ui.text(locationInput).trim().isEmpty())
                     && publishTerms.isChecked();
             continueButton.setEnabled(valid);
@@ -801,6 +808,15 @@ public class Market {
                 priceInput.requestFocus();
                 return;
             }
+            String quantityText = host.ui.text(quantityInput).trim();
+            if (quantityText.isEmpty()) quantityText = "1";
+            if (!quantityText.matches("[0-9]{1,3}") || (!savingDraft[0] && Integer.parseInt(quantityText) < 1)) {
+                step[0] = 1; renderStep.run();
+                quantityInput.setError("Enter a stock quantity from 1 to 999");
+                quantityInput.requestFocus();
+                return;
+            }
+            int quantity = Math.max(0, Math.min(999, Integer.parseInt(quantityText)));
             if (!savingDraft[0] && pickupChosen[0] && location.isEmpty()) {
                 step[0] = 1; renderStep.run();
                 locationInput.setError("Add a safe pickup location");
@@ -822,16 +838,33 @@ public class Market {
             if (!savingDraft[0] && !host.requireProfilePhoto()) {
                 return;
             }
+            if (!savingDraft[0]) {
+                if (host.safety.postingPausedDialog(host.currentStudentEmail)) return;
+                String specs = host.ui.text(specsInput).trim();
+                CampusSafety.ContentScan scan = host.safety.reviewContent(host.currentStudentEmail,
+                        host.currentUid, "listing", title + "\n" + description + "\n" + specs);
+                if (scan.flagged) {
+                    step[0] = 2;
+                    renderStep.run();
+                    host.safety.warnIfFlagged(scan, null);
+                    return;
+                }
+            }
             String category = selectedCategory[0].isEmpty() ? "Other" : selectedCategory[0];
             String condition = conditionInput.getSelectedItemPosition() == 0 ? "Good"
                     : conditionInput.getSelectedItem().toString();
             String delivery = deliveryInput.getSelectedItem().toString();
             if (location.isEmpty()) location = pickupChosen[0] ? "Campus pickup" : "Delivery";
             String createdAt = new SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(new Date());
+            String nextStatus = savingDraft[0] ? "Draft"
+                    : quantity <= 0 ? "Sold"
+                    : existing == null || existing.status.equals("Draft") || existing.status.equals("Paused")
+                    || existing.status.equals("Sold") ? "Available" : existing.status;
             MainActivity.Product product = new MainActivity.Product(title, new BigDecimal(price).setScale(2).toPlainString(),
                     description, host.currentStudentEmail, category, condition, location, delivery, createdAt,
-                    savingDraft[0] ? "Draft" : "Available", existing == null ? java.util.UUID.randomUUID().toString() : existing.id);
+                    nextStatus, existing == null ? java.util.UUID.randomUUID().toString() : existing.id);
             product.sellerName = host.currentStudentName;
+            product.quantity = quantity;
             product.specs = selectedCategory[0].equals("Technology") ? host.ui.text(specsInput).trim() : "";
             product.photos.addAll(host.draftPhotos);
             product.documentUri = host.draftDocumentUri;
@@ -1213,15 +1246,10 @@ public class Market {
         renderDraftDocument();
     }
 
-    // A listing is public when it is not hidden, draft, paused or expired.
-    // Sold listings stay visible for one day, then leave the marketplace.
+    // A listing is public when it is not hidden, draft, paused, sold or expired.
+    // Sold-out listings disappear from the marketplace immediately.
     public boolean publicListing(MainActivity.Product p) {
-        if (p.hidden || p.status.equals("Draft") || p.status.equals("Paused")) return false;
-        if (p.status.equals("Sold")) {
-            long soldAt = p.updatedTime > 0 ? p.updatedTime : p.createdTime;
-            if (soldAt > 0 && System.currentTimeMillis() - soldAt > 24L * 60 * 60 * 1000) return false;
-            return true;
-        }
+        if (p.hidden || p.quantity <= 0 || !p.status.equals("Available")) return false;
         return !expired(p);
     }
 
@@ -1345,15 +1373,21 @@ public class Market {
             showProductEditor(p);
             return;
         }
+        if (action == 1 && p.quantity <= 0) {
+            host.ui.showSimpleMessage("Sold out", "Add stock in Edit listing before republishing this item.");
+            return;
+        }
         String old = p.status; long created = p.createdTime; long oldExpiry = p.expiresTime;
+        int oldQuantity = p.quantity;
         p.status = action == 2 ? "Sold" : action == 1 && p.status.equals("Available") ? "Paused"
                 : action == -1 ? "Paused" : "Available";
+        if (action == 2) p.quantity = 0;
         if (action == 3) {
             p.createdTime = System.currentTimeMillis();
             p.expiresTime = p.createdTime + 60L * 24 * 60 * 60 * 1000;
         }
         if (!saveProducts()) {
-            p.status = old; p.createdTime = created; p.expiresTime = oldExpiry;
+            p.status = old; p.quantity = oldQuantity; p.createdTime = created; p.expiresTime = oldExpiry;
             host.ui.showSimpleMessage("Couldn't save", "Give it another go."); return;
         }
         cloudMirrorListing(p, false);
@@ -1390,6 +1424,10 @@ public class Market {
     }
 
     public void makeOffer(MainActivity.Product p) {
+        if (p.quantity <= 0) {
+            host.ui.showSimpleMessage("Sold out", "There is no stock left to make an offer on.");
+            return;
+        }
         LinearLayout form = host.ui.workflowForm();
         form.addView(host.ui.bodyText("Asking price R" + p.price + " · " + p.title, host.muted, 12));
         EditText amount = host.ui.listingField(form, "Your offer (ZAR)", "Amount", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
@@ -1407,7 +1445,8 @@ public class Market {
                 return;
             }
             try {
-                CampusFeatures.require(p.status.equals("Available") && !p.hidden && !expired(p), "This listing is unavailable");
+                CampusFeatures.require(p.status.equals("Available") && p.quantity > 0 && !p.hidden && !expired(p),
+                        p.quantity <= 0 ? "This listing is sold out" : "This listing is unavailable");
                 final CampusFeatures.Offer[] created = {null};
                 host.featureStore.update(f -> created[0] = f.offer(p.id, host.currentStudentEmail, p.sellerEmail, value, System.currentTimeMillis()));
                 if (created[0] != null) cloudSaveOffer(created[0], p);
@@ -1501,6 +1540,20 @@ public class Market {
             row.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             row.addView(host.new CampusAssetView(host, "chevron", host.muted), new LinearLayout.LayoutParams(host.ui.dp(16), host.ui.dp(16)));
             card.addView(row);
+            if (o.pending() && o.turn.equals(host.currentStudentEmail)) {
+                Button approve = host.ui.primaryButton("Approve offer");
+                LinearLayout.LayoutParams approveParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(44));
+                approveParams.topMargin = host.ui.dp(8);
+                approve.setOnClickListener(v -> {
+                    try {
+                        respondToOffer(o.id, "Accept", "");
+                    } catch (RuntimeException e) {
+                        host.ui.showSimpleMessage("Offer", e.getMessage());
+                    }
+                });
+                card.addView(approve, approveParams);
+            }
             card.setOnClickListener(v -> reviewOffer(o.id));
             content.addView(card);
         }
@@ -1540,10 +1593,17 @@ public class Market {
                 doc.put("expiresAt", offer.expires);
                 com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("offers")
                         .document(offer.id).set(doc)
-                        .addOnFailureListener(e -> android.util.Log.w("CampusTrade", "offer save failed: " + e.getMessage()));
+                        .addOnFailureListener(e -> {
+                            android.util.Log.w("CampusTrade", "offer save failed: " + e.getMessage());
+                            Toast.makeText(host,
+                                    "Offer saved on this phone, but the seller may not see it yet. Check the connection and try again.",
+                                    Toast.LENGTH_LONG).show();
+                        });
             }
             @Override public void onBad(String message) {
                 android.util.Log.w("CampusTrade", "offer seller lookup failed: " + message);
+                Toast.makeText(host, "Couldn't find the seller account for this offer.",
+                        Toast.LENGTH_LONG).show();
             }
         });
     }
@@ -1746,10 +1806,11 @@ public class Market {
         footer.setBackground(host.ui.edgeRule(host.line, true));
         boolean myTurn = o.pending() && o.turn.equals(host.currentStudentEmail);
         if (myTurn) {
-            Button accept = host.ui.primaryButton("Accept and reserve");
+            Button accept = host.ui.primaryButton("Approve offer");
             accept.setOnClickListener(v -> {
-                if (p == null || !p.status.equals("Available") || p.hidden) {
-                    host.ui.showSimpleMessage("Unavailable", "This one's no longer available.");
+                if (p == null || !p.status.equals("Available") || p.hidden || p.quantity <= 0) {
+                    host.ui.showSimpleMessage("Unavailable", p != null && p.quantity <= 0
+                            ? "This listing is sold out." : "This one's no longer available.");
                     return;
                 }
                 page.dismiss();
@@ -1863,6 +1924,13 @@ public class Market {
     }
 
     public void respondToOffer(String id, String action, String amount) {
+        if ("Accept".equalsIgnoreCase(action)) {
+            CampusFeatures.Offer before = host.featureStore.data.findOffer(id);
+            MainActivity.Product stock = before == null ? null : productById(before.listing);
+            if (stock != null && stock.quantity <= 0) {
+                throw new RuntimeException("This listing is sold out. Restock it before accepting the offer.");
+            }
+        }
         host.featureStore.update(f -> f.respond(id, host.currentStudentEmail, action, amount, System.currentTimeMillis()));
         CampusFeatures.Offer o = host.featureStore.data.findOffer(id);
         cloudUpdateOffer(o);
@@ -2429,13 +2497,14 @@ public class Market {
                             product.description, priceValue, product.category, product.condition,
                             product.specs, product.location, product.delivery, "AVAILABLE", finalImage, finalUrls,
                             finalDocumentUrl, finalDocumentName, finalDocumentMime, finalDocumentSize,
-                            new ListingRepository.IdCallback() {
+                            product.quantity, new ListingRepository.IdCallback() {
                                 @Override public void onOk(String docId) {
                                     CloudSync.putRemoteId(host, product.id, docId);
                                     CloudSync.directoryPut(host, uid, host.currentStudentEmail);
                                     rememberUploadedDocument(product, finalDocumentUrl);
                                     java.util.Map<String, Object> extra = new java.util.HashMap<>();
                                     extra.put("negotiable", product.negotiable);
+                                    extra.put("quantity", Math.max(0, product.quantity));
                                     extra.put("viewCount", product.viewCount);
                                     extra.put("favouriteCount", product.favouriteCount);
                                     extra.put("updatedAt", com.google.firebase.firestore.FieldValue.serverTimestamp());
@@ -2479,6 +2548,7 @@ public class Market {
                     fields.put("documentMime", finalDocumentMime);
                     fields.put("documentSize", finalDocumentSize);
                     fields.put("negotiable", product.negotiable);
+                    fields.put("quantity", Math.max(0, product.quantity));
                     fields.put("viewCount", product.viewCount);
                     fields.put("favouriteCount", product.favouriteCount);
                     if (expiryTime(product) > 0) fields.put("expiresAt",
@@ -2537,6 +2607,7 @@ public class Market {
         }
         java.util.Map<String, Object> fields = new java.util.HashMap<>();
         fields.put("status", product.status.toUpperCase());
+        fields.put("quantity", Math.max(0, product.quantity));
         if (expiryTime(product) > 0) fields.put("expiresAt",
                 new com.google.firebase.Timestamp(new Date(expiryTime(product))));
         repo.update(docId, fields, new ListingRepository.DoneCallback() {
@@ -2927,6 +2998,8 @@ public class Market {
                 remoteStatus,
                 productId);
         product.negotiable = item.getNegotiable();
+        product.quantity = (int) Math.max(0, Math.min(999, item.getQuantity()));
+        if (product.quantity <= 0) product.status = "Sold";
         product.specs = item.getSpecs() == null ? "" : item.getSpecs();
         product.viewCount = (int) item.getViewCount();
         product.favouriteCount = (int) item.getFavouriteCount();
@@ -2968,6 +3041,12 @@ public class Market {
         for (MainActivity.Product product : host.products) {
             if (!product.id.equals(localId)) continue;
             boolean changed = false;
+            int remoteQuantity = (int) Math.max(0, Math.min(999, item.getQuantity()));
+            if (product.quantity != remoteQuantity) {
+                product.quantity = remoteQuantity;
+                changed = true;
+            }
+            if (product.quantity <= 0) remote = "Sold";
             if (item.getExpiresAt() != null) {
                 long expiry = item.getExpiresAt().toDate().getTime();
                 if (product.expiresTime != expiry) {
@@ -3080,6 +3159,10 @@ public class Market {
             seller.setMaxLines(1);
             seller.setEllipsize(TextUtils.TruncateAt.END);
             details.addView(seller);
+            TextView stock = host.ui.bodyText(product.quantity <= 0 ? "Sold out"
+                            : product.quantity == 1 ? "1 in stock" : product.quantity + " in stock",
+                    product.quantity <= 0 ? host.error : host.muted, 10);
+            details.addView(stock);
             CampusFeatures.Offer cardReservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
             if (cardReservation != null && (cardReservation.buyer.equals(host.currentStudentEmail)
                     || cardReservation.seller.equals(host.currentStudentEmail))) {
@@ -3138,7 +3221,7 @@ public class Market {
     }
 
     String marketState(MainActivity.Product product) {        if (product.status == null) product.status = "Available";
-        if (product.status.equals("Sold")) return "Sold";
+        if (product.status.equals("Sold") || product.quantity <= 0) return "Sold out";
         if (expired(product)) return "Expired";
         if (!product.status.equals("Available")) return product.status;
         CampusFeatures.Offer reservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
@@ -3239,6 +3322,16 @@ public class Market {
         TextView conditionChip = host.ui.chip(product.condition, detailChipBg, host.text);
         conditionChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
         chips.addView(conditionChip);
+        TextView stockChip = host.ui.chip(product.quantity <= 0 ? "Sold out"
+                        : product.quantity + " available", product.quantity <= 0
+                        ? (host.nightActive ? Color.rgb(60, 36, 36) : Color.rgb(255, 236, 236)) : detailChipBg,
+                product.quantity <= 0 ? (host.nightActive ? Color.rgb(255, 150, 150) : Color.rgb(180, 30, 30)) : host.text);
+        stockChip.setBackground(host.ui.strokedRound(product.quantity <= 0
+                ? (host.nightActive ? Color.rgb(60, 36, 36) : Color.rgb(255, 236, 236)) : detailChipBg, 999, host.line));
+        LinearLayout.LayoutParams stockParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stockParams.leftMargin = host.ui.dp(6);
+        chips.addView(stockChip, stockParams);
         if (product.negotiable) {
             chips.addView(host.ui.space(host.ui.dp(6), 1));
             TextView negotiableChip = host.ui.chip("Negotiable", detailChipBg, host.text);
@@ -3362,7 +3455,7 @@ public class Market {
         reviews.setOnClickListener(v -> { page.dismiss(); host.profile.showStudentReviews(product.sellerEmail); });
         content.addView(reviews);
 
-        boolean canBuy = product.status.equals("Available") && !expired(product)
+        boolean canBuy = product.status.equals("Available") && product.quantity > 0 && !expired(product)
                 && (reservation == null || reservation.buyer.equals(host.currentStudentEmail));
         if (!ownsListing(product) && canBuy && reservation == null
                 && product.negotiable && new BigDecimal(product.price).signum() > 0) {
@@ -3403,8 +3496,8 @@ public class Market {
             bottom.addView(host.ui.space(host.ui.dp(8), 1));
             boolean reservedByOther = reservation != null && !reservation.buyer.equals(host.currentStudentEmail);
             String actionLabel = canBuy ? (new BigDecimal(product.price).signum() == 0 ? "Collect item" : "Buy now")
-                    : expired(product) ? "Expired" : reservedByOther ? "Reserved"
-                    : state.equals("Sold") || state.equals("Completed") ? "Sold" : "Unavailable";
+                    : product.quantity <= 0 ? "Sold out" : expired(product) ? "Expired" : reservedByOther ? "Reserved"
+                    : state.equals("Sold out") || state.equals("Sold") || state.equals("Completed") ? "Sold" : "Unavailable";
             Button buy = host.ui.primaryButton(actionLabel);
             if (!canBuy) {
                 buy.setBackground(host.ui.round(host.nightActive ? Color.rgb(52, 52, 57) : Color.rgb(235, 233, 228), 4));
@@ -3522,8 +3615,8 @@ public class Market {
                     host.inbox.showConversation(product.sellerEmail);
                 }
             });
-            boolean canBuy = product.status.equals("Available") && !expired(product);
-            TextView pay = host.ui.actionChip(!canBuy ? (expired(product) ? "Expired" : "Order")
+            boolean canBuy = product.status.equals("Available") && product.quantity > 0 && !expired(product);
+            TextView pay = host.ui.actionChip(!canBuy ? (product.quantity <= 0 ? "Sold out" : expired(product) ? "Expired" : "Order")
                     : new BigDecimal(product.price).signum() == 0 ? "Collect item" : "Buy now");
             pay.setOnClickListener(v -> {
                 if (!canBuy || !ownsListing(product)) details.dismiss();
@@ -3591,6 +3684,8 @@ public class Market {
                             record.optString("status", "Available"), record.getString("id"));
                     product.sellerName = record.optString("sellerName", "");
                     product.specs = record.optString("specs", "");
+                    product.quantity = Math.max(0, record.optInt("quantity", 1));
+                    if (product.quantity <= 0) product.status = "Sold";
                     product.hidden = record.optBoolean("hidden", false);
                     product.createdTime = record.optLong("createdTime", 0);
                     product.expiresTime = record.optLong("expiresTime", 0);
@@ -3642,6 +3737,7 @@ public class Market {
                         .put("hidden", product.hidden).put("createdTime", product.createdTime)
                         .put("expiresTime", product.expiresTime)
                         .put("negotiable", product.negotiable)
+                        .put("quantity", product.quantity)
                         .put("viewCount", product.viewCount).put("favouriteCount", product.favouriteCount)
                         .put("updatedTime", product.updatedTime)
                         .put("savedBy", new JSONArray(product.savedBy)));

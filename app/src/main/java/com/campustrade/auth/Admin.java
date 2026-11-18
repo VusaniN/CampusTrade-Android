@@ -17,6 +17,7 @@ import android.widget.TextView;
 import java.util.ArrayList;
 
 import com.campustrade.auth.data.CloudSync;
+import com.campustrade.auth.data.HelperBot;
 import com.campustrade.auth.data.ListingRepository;
 import android.text.InputType;
 import android.view.inputmethod.InputMethodManager;
@@ -28,6 +29,11 @@ import android.widget.Toast;
 public class Admin {
 
     private final MainActivity host;
+    private boolean reportsLoading = false;
+    private long reportsLoadedAt = 0;
+    private boolean reportCloudWarningShown = false;
+    private boolean adminChatsLoading = false;
+    private long adminChatsLoadedAt = 0;
 
     public Admin(MainActivity host) {
         this.host = host;
@@ -325,23 +331,23 @@ public class Admin {
                 host.ui.showSimpleMessage("Removal details", "Enter the exact title and seller email.");
                 return;
             }
-            String tombstoneId = "local-" + Integer.toHexString(
-                    (listingTitle + "|" + sellerEmail).toLowerCase(java.util.Locale.ROOT).hashCode());
-            recordDeletedListing(tombstoneId, listingTitle, sellerEmail);
-            for (int i = host.products.size() - 1; i >= 0; i--) {
-                MainActivity.Product product = host.products.get(i);
-                if (product.title.equalsIgnoreCase(listingTitle)
-                        && product.sellerEmail.equalsIgnoreCase(sellerEmail)) {
-                    host.products.remove(i);
+            promptRemovalReason(listingTitle, sellerEmail, reason -> {
+                String tombstoneId = "local-" + Integer.toHexString(
+                        (listingTitle + "|" + sellerEmail).toLowerCase(java.util.Locale.ROOT).hashCode());
+                recordDeletedListing(tombstoneId, listingTitle, sellerEmail, reason);
+                for (int i = host.products.size() - 1; i >= 0; i--) {
+                    MainActivity.Product product = host.products.get(i);
+                    if (product.title.equalsIgnoreCase(listingTitle)
+                            && product.sellerEmail.equalsIgnoreCase(sellerEmail)) {
+                        host.products.remove(i);
+                    }
                 }
-            }
-            host.market.saveProducts();
-            host.notification.addNotification(sellerEmail, "Listing removed",
-                    listingTitle + " was removed by a campus moderator.", "marketplace", "");
-            host.notification.sendPush(sellerEmail, "Listing removed",
-                    listingTitle + " was removed by a campus moderator.");
-            sheet.dismiss();
-            Toast.makeText(host, "Removal broadcast to the marketplace.", Toast.LENGTH_SHORT).show();
+                host.market.saveProducts();
+                notifyListingRemoved(sellerEmail, listingTitle, reason);
+                recordListingAudit(tombstoneId, listingTitle, sellerEmail, reason);
+                sheet.dismiss();
+                Toast.makeText(host, "Removal broadcast to the marketplace.", Toast.LENGTH_SHORT).show();
+            });
         });
     }
 
@@ -349,34 +355,31 @@ public class Admin {
         host.ui.dialog().setTitle("Remove \"" + product.title + "\"?")
                 .setMessage("This permanently deletes the on-device copy and broadcasts the removal to the marketplace.")
                 .setNegativeButton("Keep listing", null)
-                .setPositiveButton("Remove listing", (confirm, w) -> {
-                    host.products.remove(product);
-                    host.market.saveProducts();
-                    String remote = CloudSync.remoteId(host, product.id);
-                    String tombstoneId = remote;
-                    if (tombstoneId.isEmpty()) {
-                        tombstoneId = "local-" + Integer.toHexString(
-                                (product.title + "|" + product.sellerEmail).toLowerCase(java.util.Locale.ROOT).hashCode());
-                    }
-                    recordDeletedListing(tombstoneId, product.title, product.sellerEmail);
-                    if (!remote.isEmpty()) {
-                        new ListingRepository().delete(remote, new ListingRepository.DoneCallback() {
-                            @Override public void onOk() { }
-                            @Override public void onBad(String message) {
-                                Toast.makeText(host, "Marketplace removal broadcast; cloud delete failed: " + message,
-                                        Toast.LENGTH_LONG).show();
+                .setPositiveButton("Remove listing", (confirm, w) ->
+                        promptRemovalReason(product.title, product.sellerEmail, reason -> {
+                            host.products.remove(product);
+                            host.market.saveProducts();
+                            String remote = CloudSync.remoteId(host, product.id);
+                            String tombstoneId = remote;
+                            if (tombstoneId.isEmpty()) {
+                                tombstoneId = "local-" + Integer.toHexString(
+                                        (product.title + "|" + product.sellerEmail).toLowerCase(java.util.Locale.ROOT).hashCode());
                             }
-                        });
-                    }
-                    if (product.sellerEmail != null && !product.sellerEmail.isEmpty()) {
-                        host.notification.addNotification(product.sellerEmail, "Listing removed",
-                                product.title + " was removed by a campus moderator.", "marketplace", "");
-                        host.notification.sendPush(product.sellerEmail, "Listing removed",
-                                product.title + " was removed by a campus moderator.");
-                    }
-                    Toast.makeText(host, "Listing removal broadcast to the marketplace.", Toast.LENGTH_SHORT).show();
-                    render.run();
-                }).show();
+                            recordDeletedListing(tombstoneId, product.title, product.sellerEmail, reason);
+                            recordListingAudit(tombstoneId, product.title, product.sellerEmail, reason);
+                            if (!remote.isEmpty()) {
+                                new ListingRepository().delete(remote, new ListingRepository.DoneCallback() {
+                                    @Override public void onOk() { }
+                                    @Override public void onBad(String message) {
+                                        Toast.makeText(host, "Marketplace removal broadcast; cloud delete failed: " + message,
+                                                Toast.LENGTH_LONG).show();
+                                    }
+                                });
+                            }
+                            notifyListingRemoved(product.sellerEmail, product.title, reason);
+                            Toast.makeText(host, "Listing removal broadcast to the marketplace.", Toast.LENGTH_SHORT).show();
+                            render.run();
+                        })).show();
     }
 
     private void confirmRemoveCloudListing(Dialog page, String docId, String title, String sellerEmail,
@@ -385,51 +388,85 @@ public class Admin {
         host.ui.dialog().setTitle("Remove \"" + title + "\"?")
                 .setMessage("This permanently deletes the listing by " + host.studentName(sellerEmail) + " for everyone.")
                 .setNegativeButton("Keep listing", null)
-                .setPositiveButton("Remove listing", (confirm, w) -> {
-                    String previousRemote = docId;
-                    recordDeletedListing(docId, title, sellerEmail);
-                    for (int i = host.products.size() - 1; i >= 0; i--) {
-                        MainActivity.Product product = host.products.get(i);
-                        String remote = CloudSync.remoteId(host, product.id);
-                        if (previousRemote.equals(remote) || previousRemote.equals(product.id)
-                                || ("remote-" + previousRemote).equals(product.id)) {
-                            host.products.remove(i);
-                        }
-                    }
-                    host.market.saveProducts();
-                    if (sellerEmail != null && !sellerEmail.isEmpty()) {
-                        host.notification.addNotification(sellerEmail, "Listing removed",
-                                title + " was removed by a campus moderator.", "marketplace", "");
-                        host.notification.sendPush(sellerEmail, "Listing removed",
-                                title + " was removed by a campus moderator.");
-                    }
-                    new ListingRepository().delete(docId, new ListingRepository.DoneCallback() {
-                        @Override public void onOk() {
-                            Toast.makeText(host, "Listing removed for everyone.", Toast.LENGTH_SHORT).show();
-                        }
-                        @Override public void onBad(String message) {
-                            Toast.makeText(host, "Removed from the marketplace index; cloud delete failed: " + message,
-                                    Toast.LENGTH_LONG).show();
-                        }
-                    });
-                    for (int i = listings.size() - 1; i >= 0; i--) {
-                        if (listings.get(i).getId().equals(docId)) listings.remove(i);
-                    }
-                    render.run();
-                }).show();
+                .setPositiveButton("Remove listing", (confirm, w) ->
+                        promptRemovalReason(title, sellerEmail, reason -> {
+                            String previousRemote = docId;
+                            recordDeletedListing(docId, title, sellerEmail, reason);
+                            recordListingAudit(docId, title, sellerEmail, reason);
+                            for (int i = host.products.size() - 1; i >= 0; i--) {
+                                MainActivity.Product product = host.products.get(i);
+                                String remote = CloudSync.remoteId(host, product.id);
+                                if (previousRemote.equals(remote) || previousRemote.equals(product.id)
+                                        || ("remote-" + previousRemote).equals(product.id)) {
+                                    host.products.remove(i);
+                                }
+                            }
+                            host.market.saveProducts();
+                            notifyListingRemoved(sellerEmail, title, reason);
+                            new ListingRepository().delete(docId, new ListingRepository.DoneCallback() {
+                                @Override public void onOk() {
+                                    Toast.makeText(host, "Listing removed for everyone.", Toast.LENGTH_SHORT).show();
+                                }
+                                @Override public void onBad(String message) {
+                                    Toast.makeText(host, "Removed from the marketplace index; cloud delete failed: " + message,
+                                            Toast.LENGTH_LONG).show();
+                                }
+                            });
+                            for (int i = listings.size() - 1; i >= 0; i--) {
+                                if (listings.get(i).getId().equals(docId)) listings.remove(i);
+                            }
+                            render.run();
+                        })).show();
     }
 
-    private void recordDeletedListing(String docId, MainActivity.Product product) {
+    private interface ReasonCallback {
+        void onReason(String reason);
+    }
+
+    /** No listing leaves the marketplace without a written moderator reason. */
+    private void promptRemovalReason(String title, String sellerEmail, ReasonCallback callback) {
+        LinearLayout form = new LinearLayout(host);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(0, host.ui.dp(4), 0, 0);
+        form.addView(host.ui.bodyText("The reason is saved in the deleted-listing record and audit log, and sent to "
+                + host.studentName(sellerEmail) + ".", host.muted, 11));
+        EditText note = host.ui.listingField(form, "Removal reason", "Why is this listing being removed?",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        note.setSingleLine(false);
+        note.setMinLines(3);
+        note.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(500)});
+        android.app.AlertDialog dialog = host.ui.dialog()
+                .setTitle("Remove \"" + title + "\"?")
+                .setView(form)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Remove listing", null)
+                .create();
+        dialog.setOnShowListener(shown -> dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String reason = host.ui.text(note).trim();
+                    if (reason.length() < 8) {
+                        note.setError("Add at least 8 characters explaining the removal");
+                        return;
+                    }
+                    dialog.dismiss();
+                    callback.onReason(reason);
+                }));
+        dialog.show();
+    }
+
+    private void recordDeletedListing(String docId, MainActivity.Product product, String reason) {
         if (product == null) return;
-        recordDeletedListing(docId, product.title, product.sellerEmail);
+        recordDeletedListing(docId, product.title, product.sellerEmail, reason);
     }
 
-    private void recordDeletedListing(String docId, String title, String sellerEmail) {
+    private void recordDeletedListing(String docId, String title, String sellerEmail, String reason) {
         if (docId == null || docId.isEmpty()) return;
         java.util.Map<String, Object> tombstone = new java.util.HashMap<>();
         tombstone.put("listingId", docId);
         tombstone.put("title", title == null ? "" : title);
         tombstone.put("sellerEmail", sellerEmail == null ? "" : sellerEmail);
+        tombstone.put("reason", reason == null ? "" : reason);
+        tombstone.put("removedBy", host.currentStudentEmail);
         tombstone.put("deletedAt", com.google.firebase.Timestamp.now());
         tombstone.put("expiresAt", new com.google.firebase.Timestamp(
                 new java.util.Date(System.currentTimeMillis() + 30L * 24 * 60 * 60 * 1000)));
@@ -437,6 +474,29 @@ public class Admin {
                 .collection("deletedListings").document(docId).set(tombstone)
                 .addOnFailureListener(e -> android.util.Log.w("CampusTrade",
                         "deleted listing tombstone failed: " + e.getMessage()));
+    }
+
+    private void recordListingAudit(String listingId, String title, String sellerEmail, String reason) {
+        java.util.Map<String, Object> action = new java.util.HashMap<>();
+        action.put("adminId", host.currentUid);
+        action.put("adminName", host.currentStudentName);
+        action.put("action", "remove_listing");
+        action.put("listingId", listingId == null ? "" : listingId);
+        action.put("title", title == null ? "" : title);
+        action.put("sellerEmail", sellerEmail == null ? "" : sellerEmail);
+        action.put("reason", reason == null ? "" : reason);
+        action.put("createdAt", com.google.firebase.Timestamp.now());
+        com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                .collection("admin_actions").add(action)
+                .addOnFailureListener(e -> android.util.Log.w("CampusTrade",
+                        "listing audit action failed: " + e.getMessage()));
+    }
+
+    private void notifyListingRemoved(String sellerEmail, String title, String reason) {
+        if (sellerEmail == null || sellerEmail.isEmpty()) return;
+        String message = title + " was removed by a campus moderator. Reason: " + reason;
+        host.notification.addNotification(sellerEmail, "Listing removed", message, "marketplace", "");
+        host.notification.sendPush(sellerEmail, "Listing removed", message);
     }
 
     // Load student profiles, but skip the signed-in moderator.
@@ -623,16 +683,20 @@ public class Admin {
         hero.addView(top);
         LinearLayout priorityRow = host.ui.horizontal();
         priorityRow.setPadding(0, host.ui.dp(8), 0, 0);
-        int priorityBg = report.priority.equals("High") ? host.ui.statusBackground("Awaiting")
-                : host.nightActive ? Color.rgb(48, 48, 52) : Color.rgb(242, 240, 235);
-        int priorityInk = report.priority.equals("High") ? host.ui.statusInk("Awaiting") : host.muted;
-        TextView priority = host.ui.chip(report.priority + " priority", priorityBg, priorityInk);
-        priority.setTextSize(10);
-        priorityRow.addView(priority);
+        priorityRow.addView(priorityChip(report.priority));
         hero.addView(priorityRow);
         TextView detail = host.ui.bodyText(report.detail, host.text, 14);
         detail.setPadding(0, host.ui.dp(10), 0, host.ui.dp(10));
         hero.addView(detail);
+        if (!report.resolutionNote.isEmpty()) {
+            TextView outcome = host.ui.bodyText("Resolution: " + report.resolutionNote, host.text, 12);
+            outcome.setPadding(host.ui.dp(10), host.ui.dp(9), host.ui.dp(10), host.ui.dp(9));
+            outcome.setBackground(host.ui.strokedRound(host.surface(), 10, host.line));
+            LinearLayout.LayoutParams outcomeParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            outcomeParams.topMargin = host.ui.dp(10);
+            hero.addView(outcome, outcomeParams);
+        }
         hero.addView(host.ui.bodyText("Reported by " + report.reporterName + " · " + host.notification.alertTime(report.createdAt),
                 host.muted, 11));
         content.addView(hero);
@@ -739,8 +803,7 @@ public class Admin {
         if (reviewReport) {
             addReportAction(body, "star", "Remove reported review", "Delete the rating from the seller profile", v -> {
                 if (sheetRef[0] != null) sheetRef[0].dismiss();
-                page.dismiss();
-                removeReportedReview(report);
+                removeReportedReview(report, page);
             });
         }
         if (userReport) {
@@ -767,13 +830,13 @@ public class Admin {
             replyToReporter(report);
         });
         if (report.isOpen()) {
-            addReportAction(body, "check", "Resolve report", "Mark it as handled", v -> {
+            addReportAction(body, "check", "Resolve report", "Mark it as handled and notify the reporter", v -> {
                 if (sheetRef[0] != null) sheetRef[0].dismiss();
-                closeReport(report, false, page);
+                promptCloseReport(report, false, page);
             });
-            addReportAction(body, "close", "Dismiss report", "Close it without action", v -> {
+            addReportAction(body, "close", "Dismiss report", "Close it with a recorded reason", v -> {
                 if (sheetRef[0] != null) sheetRef[0].dismiss();
-                closeReport(report, true, page);
+                promptCloseReport(report, true, page);
             });
         }
         sheetRef[0] = host.ui.showBottomSheet("Report actions", body);
@@ -858,49 +921,99 @@ public class Admin {
                 .setMessage("This permanently deletes the listing by " + host.studentName(product.sellerEmail)
                         + " and resolves the report. It can't be undone.")
                 .setNegativeButton("Keep listing", null)
-                .setPositiveButton("Remove listing", (d, which) -> {
-                    host.products.remove(product);
-                    if (!host.market.saveProducts()) {
-                        host.products.add(product);
-                        Toast.makeText(host, "Couldn't remove that listing.", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    if (product.sellerEmail != null && !product.sellerEmail.isEmpty()) {
-                        host.notification.addNotification(product.sellerEmail, "Listing removed",
-                                product.title + " was removed after a moderation review.", "marketplace", "");
-                        host.notification.sendPush(product.sellerEmail, "Listing removed",
-                                product.title + " was removed after a moderation review.");
-                    }
-                    String docId = CloudSync.remoteId(host, product.id);
-                    recordDeletedListing(docId, product);
-                    if (!docId.isEmpty()) {
-                        new ListingRepository().delete(docId, new ListingRepository.DoneCallback() {
-                            @Override public void onOk() {
-                                Toast.makeText(host, "Listing removed for everyone.", Toast.LENGTH_SHORT).show();
+                .setPositiveButton("Remove listing", (d, which) ->
+                        promptRemovalReason(product.title, product.sellerEmail, reason -> {
+                            host.products.remove(product);
+                            if (!host.market.saveProducts()) {
+                                host.products.add(product);
+                                Toast.makeText(host, "Couldn't remove that listing.", Toast.LENGTH_SHORT).show();
+                                return;
                             }
-                            @Override public void onBad(String message) {
-                                Toast.makeText(host, "Removed here, but the cloud copy refused to delete: " + message,
-                                        Toast.LENGTH_LONG).show();
+                            String docId = CloudSync.remoteId(host, product.id);
+                            String tombstoneId = docId.isEmpty()
+                                    ? "local-" + Integer.toHexString((product.title + "|" + product.sellerEmail)
+                                    .toLowerCase(java.util.Locale.ROOT).hashCode())
+                                    : docId;
+                            recordDeletedListing(tombstoneId, product, reason);
+                            recordListingAudit(tombstoneId, product.title, product.sellerEmail, reason);
+                            notifyListingRemoved(product.sellerEmail, product.title, reason);
+                            if (!docId.isEmpty()) {
+                                new ListingRepository().delete(docId, new ListingRepository.DoneCallback() {
+                                    @Override public void onOk() {
+                                        Toast.makeText(host, "Listing removed for everyone.", Toast.LENGTH_SHORT).show();
+                                    }
+                                    @Override public void onBad(String message) {
+                                        Toast.makeText(host, "Removed here, but the cloud copy refused to delete: " + message,
+                                                Toast.LENGTH_LONG).show();
+                                    }
+                                });
                             }
-                        });
-                    }
-                    closeReport(report, false, page);
-                }).show();
+                            closeReport(report, false, page, "Listing removed. Reason: " + reason);
+                        })).show();
     }
 
-    private void closeReport(MainActivity.ModerationReport report, boolean dismiss, Dialog page) {
-        String previous = report.state;
-        if (!report.close(canUseAdmin(), dismiss)) return;
+    /** A resolution or dismissal needs a written reason before it can close. */
+    private void promptCloseReport(MainActivity.ModerationReport report, boolean dismiss, Dialog page) {
+        LinearLayout form = new LinearLayout(host);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(0, host.ui.dp(4), 0, 0);
+        form.addView(host.ui.bodyText(dismiss
+                        ? "Tell the reporter why this report is being dismissed. The reason is saved and sent to them."
+                        : "Explain what you did. The reason is saved and sent to the reporter with a request for satisfaction feedback.",
+                host.muted, 11));
+        EditText note = host.ui.listingField(form, "Reason", "What action did you take?",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        note.setSingleLine(false);
+        note.setMinLines(3);
+        note.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(500)});
+        android.app.AlertDialog dialog = host.ui.dialog()
+                .setTitle(dismiss ? "Dismiss report?" : "Resolve report?")
+                .setView(form)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton(dismiss ? "Dismiss" : "Resolve", null)
+                .create();
+        dialog.setOnShowListener(shown -> dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String reason = host.ui.text(note).trim();
+                    if (reason.length() < 8) {
+                        note.setError("Add at least 8 characters so the reporter understands");
+                        return;
+                    }
+                    dialog.dismiss();
+                    closeReport(report, dismiss, page, reason);
+                }));
+        dialog.show();
+    }
+
+    private void closeReport(MainActivity.ModerationReport report, boolean dismiss, Dialog page, String note) {
+        String previousState = report.state;
+        String previousNote = report.resolutionNote;
+        long previousResolvedAt = report.resolvedAt;
+        long now = System.currentTimeMillis();
+        if (!report.close(canUseAdmin(), dismiss, note, now)) return;
         if (!host.saveModerationReports()) {
-            report.state = previous;
+            report.state = previousState;
+            report.resolutionNote = previousNote;
+            report.resolvedAt = previousResolvedAt;
             Toast.makeText(host, "Couldn't save that report.", Toast.LENGTH_SHORT).show();
             return;
         }
+        java.util.Map<String, Object> fields = new java.util.HashMap<>();
+        fields.put("state", report.state);
+        fields.put("resolutionNote", report.resolutionNote);
+        fields.put("resolvedAt", com.google.firebase.Timestamp.now());
+        fields.put("resolvedBy", host.currentStudentEmail);
         com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("reports")
-                .document(report.id).update("state", report.state);
+                .document(report.id).update(fields);
         if (report.reporterEmail != null && !report.reporterEmail.isEmpty()) {
-            host.notification.sendPush(report.reporterEmail, "Admin: Report update",
-                    report.productTitle + " report was " + report.state + ".", "marketplace", "");
+            String title = "Admin: Report " + report.state.toLowerCase(java.util.Locale.ROOT);
+            String message = report.productTitle + " was " + report.state.toLowerCase(java.util.Locale.ROOT)
+                    + ". Reason: " + note
+                    + (dismiss ? "" : " Please rate how we handled it in Settings > My reports.");
+            host.notification.addNotification(report.reporterEmail, title, message, "marketplace", "");
+            host.notification.sendPush(report.reporterEmail, title, message, "marketplace", "");
+            host.inbox.closeAdminChatForEmail(report.reporterEmail,
+                    "This report was " + report.state.toLowerCase(java.util.Locale.ROOT) + ": " + note);
         }
         page.dismiss();
         host.showAppScreen("AdminReports");
@@ -946,8 +1059,8 @@ public class Admin {
         sheetRef[0] = host.ui.showBottomSheet("Reply to reporter", body);
     }
 
-    /** Remove the reported rating and close the report. */
-    private void removeReportedReview(MainActivity.ModerationReport report) {
+    /** Remove the reported rating and close the report with a written reason. */
+    private void removeReportedReview(MainActivity.ModerationReport report, Dialog page) {
         String docId = report.productId.substring("review:".length()).trim();
         if (docId.isEmpty()) {
             toast("That review link is missing its ID. Nothing was removed.");
@@ -960,15 +1073,8 @@ public class Admin {
                         com.google.firebase.firestore.FirebaseFirestore.getInstance()
                                 .collection("ratings").document(docId).delete()
                                 .addOnSuccessListener(v -> {
-                                    String previous = report.state;
-                                    if (report.close(canUseAdmin(), false)) {
-                                        if (!host.saveModerationReports()) report.state = previous;
-                                        else com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                                                .collection("reports").document(report.id)
-                                                .update("state", report.state);
-                                    }
-                                    toast("Review removed. The report is resolved.");
-                                    host.showAppScreen("AdminReports");
+                                    toast("Review removed. Add a reason to close the report.");
+                                    promptCloseReport(report, false, page);
                                 })
                                 .addOnFailureListener(e -> toast("Couldn't remove that review. Check your admin access and try again.")))
                 .show();
@@ -978,12 +1084,19 @@ public class Admin {
         Toast.makeText(host, message, Toast.LENGTH_SHORT).show();
     }
 
-    // Load reports from Firebase and fill in missing fields.
+    // Load the cloud queue, but never throw away reports already saved on this phone.
     public void loadReports(Runnable after) {
+        if (host.currentUid == null || host.currentUid.isEmpty()) {
+            if (after != null) after.run();
+            return;
+        }
         com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("reports").limit(50).get()
                 .addOnSuccessListener(snap -> {
                     if (host.isDestroyed() || host.isFinishing()) { if (after != null) after.run(); return; }
-                    host.moderationReports.clear();
+                    java.util.LinkedHashMap<String, MainActivity.ModerationReport> merged = new java.util.LinkedHashMap<>();
+                    for (MainActivity.ModerationReport existing : host.moderationReports) {
+                        merged.put(existing.id, existing);
+                    }
                     for (com.google.firebase.firestore.DocumentSnapshot doc : snap.getDocuments()) {
                         String id = doc.getId();
                         String productId = doc.getString("productId");
@@ -999,7 +1112,7 @@ public class Admin {
                         Object created = doc.get("createdAt");
                         if (created instanceof com.google.firebase.Timestamp) createdAt = ((com.google.firebase.Timestamp) created).toDate().getTime();
                         else if (created instanceof Number) createdAt = ((Number) created).longValue();
-                        host.moderationReports.add(new MainActivity.ModerationReport(id,
+                        MainActivity.ModerationReport report = new MainActivity.ModerationReport(id,
                                 productId == null ? "" : productId,
                                 productTitle == null ? "Listing" : productTitle,
                                 reporterEmail == null ? "" : reporterEmail,
@@ -1008,11 +1121,52 @@ public class Admin {
                                 detail == null ? "" : detail,
                                 priority == null ? "Medium" : priority,
                                 state == null ? "Open" : state,
-                                createdAt));
+                                createdAt);
+                        report.resolutionNote = doc.getString("resolutionNote") == null
+                                ? "" : doc.getString("resolutionNote");
+                        Object resolved = doc.get("resolvedAt");
+                        if (resolved instanceof com.google.firebase.Timestamp) {
+                            report.resolvedAt = ((com.google.firebase.Timestamp) resolved).toDate().getTime();
+                        } else if (resolved instanceof Number) {
+                            report.resolvedAt = ((Number) resolved).longValue();
+                        }
+                        Long satisfaction = doc.getLong("satisfaction");
+                        if (satisfaction != null) report.satisfaction = satisfaction.intValue();
+                        String satisfactionComment = doc.getString("satisfactionComment");
+                        if (satisfactionComment != null) report.satisfactionComment = satisfactionComment;
+                        merged.put(id, report);
                     }
+                    host.moderationReports.clear();
+                    host.moderationReports.addAll(merged.values());
+                    reportsLoadedAt = System.currentTimeMillis();
+                    reportCloudWarningShown = false;
                     if (after != null) after.run();
                 })
-                .addOnFailureListener(e -> { if (after != null) after.run(); });
+                .addOnFailureListener(e -> {
+                    android.util.Log.w("CampusTrade", "report queue load failed: " + e.getMessage());
+                    reportsLoadedAt = System.currentTimeMillis();
+                    if (canUseAdmin() && !reportCloudWarningShown) {
+                        reportCloudWarningShown = true;
+                        Toast.makeText(host,
+                                "Cloud reports unavailable. Showing reports saved on this device. Check the Firestore isAdmin role.",
+                                Toast.LENGTH_LONG).show();
+                    }
+                    if (after != null) after.run();
+                });
+    }
+
+    /** Refresh the queue when Admin/Reports is opened, without rebuilding in a loop. */
+    public void refreshReportsIfStale() {
+        if (!canUseAdmin() || reportsLoading) return;
+        if (System.currentTimeMillis() - reportsLoadedAt < 6000) return;
+        reportsLoading = true;
+        loadReports(() -> {
+            reportsLoading = false;
+            reportsLoadedAt = System.currentTimeMillis();
+            if (host.isDestroyed() || host.isFinishing()) return;
+            if ("AdminReports".equals(host.currentTab)) host.showAppScreen("AdminReports");
+            else if ("Admin".equals(host.currentTab)) host.showAppScreen("Admin");
+        });
     }
 
     // The login Admin screen has no app shell, so build a small one.
@@ -1021,8 +1175,8 @@ public class Admin {
             host.auth.showAuthScreen();
             return;
         }
-        host.currentTab = "AdminReports".equals(tab) ? "AdminReports"
-                : "AdminAnalytics".equals(tab) ? "AdminAnalytics" : "Admin";
+        host.currentTab = "AdminReports".equals(tab) || "AdminChat".equals(tab)
+                || "AdminAnalytics".equals(tab) ? tab : "Admin";
         LinearLayout screen = new LinearLayout(host);
         screen.setOrientation(LinearLayout.VERTICAL);
         screen.setBackgroundColor(host.page);
@@ -1043,7 +1197,14 @@ public class Admin {
         scroll.addView(content);
         screen.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
+        if (!host.currentTab.equals("Admin")) {
+            TextView back = host.ui.linkText("< Back to admin overview");
+            back.setPadding(0, host.ui.dp(2), 0, host.ui.dp(10));
+            back.setOnClickListener(v -> host.showAppScreen("Admin"));
+            content.addView(back);
+        }
         if (host.currentTab.equals("AdminReports")) buildAdminReports(content);
+        else if (host.currentTab.equals("AdminChat")) buildAdminChats(content);
         else if (host.currentTab.equals("AdminAnalytics")) host.adminAnalytics.build(content);
         else buildAdmin(content);
 
@@ -1060,6 +1221,7 @@ public class Admin {
     // Dashboard numbers come from this phone; "last 24 hours" uses the last active time.
     public void buildAdmin(LinearLayout content) {
         if (!canUseAdmin()) return;
+        refreshReportsIfStale();
         String adminName = host.adminOnlySession ? "Campus moderator" : host.currentStudentName;
         LinearLayout banner = host.ui.horizontal();
         banner.setGravity(Gravity.CENTER_VERTICAL);
@@ -1084,12 +1246,13 @@ public class Admin {
         adminTabScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout adminTabs = host.ui.horizontal();
         adminTabs.setPadding(0, host.ui.dp(10), 0, host.ui.dp(2));
-        for (String tab : new String[] {"Overview", "Reports", "Feedback", "Analytics"}) {
+        for (String tab : new String[] {"Overview", "Reports", "Chat", "Feedback", "Analytics"}) {
             boolean active = tab.equals("Overview");
             TextView tabView = host.ui.filterPill(tab, active);
             tabView.setSingleLine(true);
             tabView.setOnClickListener(v -> {
                 if (tab.equals("Reports")) host.showAppScreen("AdminReports");
+                else if (tab.equals("Chat")) host.showAppScreen("AdminChat");
                 else if (tab.equals("Feedback")) showFeedback();
                 else if (tab.equals("Analytics")) host.showAppScreen("AdminAnalytics");
                 else host.showAppScreen("Admin");
@@ -1152,6 +1315,12 @@ public class Admin {
         tools.setBackground(host.ui.strokedRound(host.surface(), 16, host.line));
         tools.addView(host.profile.settingsOption("shield", "Manage student accounts", "Search, suspend or restore access", "Open", v -> adminManageUsers()));
         host.ui.addMenuDivider(tools);
+        tools.addView(host.profile.settingsOption("flag", "Account appeals", "Review suspended accounts and content warnings", "Open", v -> showAppeals()));
+        host.ui.addMenuDivider(tools);
+        tools.addView(host.profile.settingsOption("shield", "Content warning queue", "Review flagged listings, chats and posts", "Open", v -> showContentFlags()));
+        host.ui.addMenuDivider(tools);
+        tools.addView(host.profile.settingsOption("chat", "Student chat", "Reply live, close resolved conversations", "Open", v -> host.showAppScreen("AdminChat")));
+        host.ui.addMenuDivider(tools);
         tools.addView(host.profile.settingsOption("checklist", "Marketplace analytics", "Users, listings, sales and reports", "Open", v -> host.showAppScreen("AdminAnalytics")));
         host.ui.addMenuDivider(tools);
         tools.addView(host.profile.settingsOption("chat", "View feedback", "Help and support messages from students", "Open", v -> showFeedback()));
@@ -1168,6 +1337,208 @@ public class Admin {
         host.ui.addMenuDivider(destructive);
         destructive.addView(host.profile.settingsOption("profile", "Remove a student", "Delete a profile and their listings", "Remove", v -> adminRemoveUser()));
         content.addView(destructive);
+    }
+
+    /** Live moderator conversations and the report threads behind them. */
+    public void buildAdminChats(LinearLayout content) {
+        if (!canUseAdmin()) return;
+        if (!adminChatsLoading && System.currentTimeMillis() - adminChatsLoadedAt > 15000) {
+            adminChatsLoading = true;
+            host.inbox.syncAdminChats(() -> {
+                adminChatsLoading = false;
+                adminChatsLoadedAt = System.currentTimeMillis();
+                if (host.isDestroyed() || host.isFinishing()) return;
+                if ("AdminChat".equals(host.currentTab)) host.showAppScreen("AdminChat");
+            });
+        }
+
+        LinearLayout hero = host.ui.card(host.surface(), 16, host.ui.dp(16));
+        hero.setBackground(host.ui.strokedRound(host.surface(), 16, host.line));
+        LinearLayout heroTop = host.ui.horizontal();
+        heroTop.setGravity(Gravity.CENTER_VERTICAL);
+        View symbol = host.new CampusAssetView(host, "chat", host.blue);
+        symbol.setPadding(host.ui.dp(9), host.ui.dp(9), host.ui.dp(9), host.ui.dp(9));
+        symbol.setBackground(host.ui.round(host.nightActive ? Color.rgb(38, 50, 66) : Color.rgb(234, 242, 255), 10));
+        heroTop.addView(symbol, new LinearLayout.LayoutParams(host.ui.dp(40), host.ui.dp(40)));
+        LinearLayout heroCopy = new LinearLayout(host);
+        heroCopy.setOrientation(LinearLayout.VERTICAL);
+        heroCopy.setPadding(host.ui.dp(10), 0, host.ui.dp(4), 0);
+        heroCopy.addView(host.ui.titleText("Student chat", host.text, 17));
+        heroCopy.addView(host.ui.bodyText("Reply live. Chats close when the report is resolved or after 1 hour of inactivity.",
+                host.muted, 11));
+        heroTop.addView(heroCopy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        hero.addView(heroTop);
+        Button start = host.ui.primaryButton("Message a student");
+        start.setOnClickListener(v -> promptAdminChatStudent());
+        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+        startParams.topMargin = host.ui.dp(12);
+        hero.addView(start, startParams);
+        content.addView(hero);
+
+        int openReports = 0;
+        ArrayList<MainActivity.ModerationReport> reportChats = new ArrayList<>();
+        for (MainActivity.ModerationReport report : host.moderationReports) {
+            if (!report.isOpen() || report.reporterEmail == null || report.reporterEmail.isEmpty()) continue;
+            openReports++;
+            reportChats.add(report);
+        }
+        java.util.Collections.sort(reportChats,
+                (a, b) -> Long.compare(b.createdAt, a.createdAt));
+        host.profile.settingsHeading(content, "Report conversations (" + openReports + ")");
+        if (reportChats.isEmpty()) {
+            content.addView(host.ui.emptyState("flag", "No open report conversations",
+                    "New reports that need an admin reply will appear here."));
+        } else {
+            LinearLayout reports = host.ui.card(host.surface(), 16, 0);
+            reports.setBackground(host.ui.strokedRound(host.surface(), 16, host.line));
+            int shownReports = 0;
+            for (MainActivity.ModerationReport report : reportChats) {
+                if (shownReports++ > 0) host.ui.addMenuDivider(reports);
+                LinearLayout row = host.ui.horizontal();
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(host.ui.dp(12), host.ui.dp(11), host.ui.dp(12), host.ui.dp(11));
+                LinearLayout copy = new LinearLayout(host);
+                copy.setOrientation(LinearLayout.VERTICAL);
+                copy.addView(host.ui.titleText(report.reporterName, host.text, 13));
+                TextView reason = host.ui.bodyText(report.reason + " - " + report.productTitle, host.muted, 11);
+                reason.setSingleLine(true);
+                reason.setEllipsize(TextUtils.TruncateAt.END);
+                copy.addView(reason);
+                copy.addView(host.ui.bodyText(host.notification.alertTime(report.createdAt), host.muted, 10));
+                row.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                TextView chat = host.ui.linkText("Live chat");
+                chat.setTextSize(11);
+                chat.setPadding(host.ui.dp(6), host.ui.dp(8), host.ui.dp(6), host.ui.dp(8));
+                chat.setOnClickListener(v -> host.inbox.openReportChat(report.reporterEmail));
+                row.addView(chat);
+                TextView email = host.ui.linkText("Email");
+                email.setTextSize(11);
+                email.setPadding(host.ui.dp(6), host.ui.dp(8), host.ui.dp(4), host.ui.dp(8));
+                email.setOnClickListener(v -> emailStudent(report.reporterEmail,
+                        "CampusTrade report: " + report.productTitle));
+                row.addView(email);
+                row.setOnClickListener(v -> showReportReview(report));
+                reports.addView(row);
+            }
+            content.addView(reports);
+        }
+
+        host.profile.settingsHeading(content, "All student conversations");
+        ArrayList<String> peers = adminChatPeers();
+        if (peers.isEmpty()) {
+            content.addView(host.ui.emptyState("chat", "No messages yet",
+                    "Start a conversation above, or reply to a report conversation."));
+            return;
+        }
+        LinearLayout conversations = host.ui.card(host.surface(), 16, 0);
+        conversations.setBackground(host.ui.strokedRound(host.surface(), 16, host.line));
+        for (int i = 0; i < peers.size(); i++) {
+            String peer = peers.get(i);
+            MainActivity.ChatMessage latest = host.inbox.latestMessage(peer);
+            if (latest == null) continue;
+            if (conversations.getChildCount() > 0) host.ui.addMenuDivider(conversations);
+            boolean closed = host.inbox.adminChatClosed(peer);
+            LinearLayout row = host.ui.horizontal();
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(host.ui.dp(12), host.ui.dp(11), host.ui.dp(12), host.ui.dp(11));
+            TextView avatar = host.ui.titleText(host.ui.initials(host.studentName(peer)), host.blue, 12);
+            avatar.setGravity(Gravity.CENTER);
+            avatar.setBackground(host.ui.round(host.nightActive ? Color.rgb(38, 50, 66) : Color.rgb(234, 242, 255), 999));
+            row.addView(avatar, new LinearLayout.LayoutParams(host.ui.dp(38), host.ui.dp(38)));
+            LinearLayout copy = new LinearLayout(host);
+            copy.setOrientation(LinearLayout.VERTICAL);
+            copy.setPadding(host.ui.dp(10), 0, host.ui.dp(6), 0);
+            copy.addView(host.ui.titleText(host.studentName(peer), host.text, 13));
+            String preview = latest.body == null ? "" : latest.body
+                    .replace("[Admin]", "").replace("[Chat closed]", "").trim();
+            if (closed) preview = "Chat closed" + (preview.isEmpty() ? "" : " - " + preview);
+            TextView message = host.ui.bodyText(preview, host.muted, 11);
+            message.setSingleLine(true);
+            message.setEllipsize(TextUtils.TruncateAt.END);
+            copy.addView(message);
+            row.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            int bg = closed ? (host.nightActive ? Color.rgb(48, 48, 52) : Color.rgb(242, 240, 235))
+                    : host.ui.statusBackground("Active");
+            int ink = closed ? host.muted : host.ui.statusInk("Active");
+            TextView state = host.ui.chip(closed ? "Closed" : "Open", bg, ink);
+            state.setTextSize(9);
+            row.addView(state);
+            View chevron = host.new CampusAssetView(host, "chevron", host.muted);
+            LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(host.ui.dp(16), host.ui.dp(16));
+            chevronParams.leftMargin = host.ui.dp(6);
+            row.addView(chevron, chevronParams);
+            row.setOnClickListener(v -> {
+                host.chatReturnTab = "AdminChat";
+                host.inbox.showConversation(peer);
+            });
+            host.ui.attachPressAnimation(row);
+            conversations.addView(row);
+        }
+        content.addView(conversations);
+    }
+
+    private ArrayList<String> adminChatPeers() {
+        java.util.LinkedHashMap<String, Long> latest = new java.util.LinkedHashMap<>();
+        for (MainActivity.ChatMessage message : host.chatMessages) {
+            String peer = null;
+            if (message.sender.equals(host.currentStudentEmail)) peer = message.recipient;
+            else if (message.recipient.equals(host.currentStudentEmail)) peer = message.sender;
+            if (peer == null || peer.isEmpty() || peer.equals(host.currentStudentEmail)
+                    || peer.equals(HelperBot.PEER) || peer.startsWith("group:")) continue;
+            Long when = latest.get(peer);
+            if (when == null || message.time > when) latest.put(peer, message.time);
+        }
+        ArrayList<String> peers = new ArrayList<>(latest.keySet());
+        java.util.Collections.sort(peers, (a, b) -> Long.compare(
+                latest.get(b) == null ? 0 : latest.get(b),
+                latest.get(a) == null ? 0 : latest.get(a)));
+        return peers;
+    }
+
+    private void promptAdminChatStudent() {
+        LinearLayout form = new LinearLayout(host);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(0, host.ui.dp(4), 0, 0);
+        form.addView(host.ui.bodyText("Open a direct CampusTrade chat with a student. The student sees your messages as Admin.",
+                host.muted, 11));
+        EditText email = host.ui.listingField(form, "Student email", "student@vossie.net",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        Button open = host.ui.primaryButton("Open chat");
+        LinearLayout.LayoutParams openParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+        openParams.topMargin = host.ui.dp(10);
+        form.addView(open, openParams);
+        Dialog sheet = host.ui.showBottomSheet("Message a student", form);
+        open.setOnClickListener(v -> {
+            String peer = host.normalizeEmail(host.ui.text(email));
+            if (!host.auth.isStudentEmail(peer)) {
+                email.setError("Enter a student @vossie.net email");
+                return;
+            }
+            if (peer.equals(host.currentStudentEmail)) {
+                email.setError("Choose another student");
+                return;
+            }
+            sheet.dismiss();
+            host.chatReturnTab = "AdminChat";
+            host.inbox.showConversation(peer);
+        });
+    }
+
+    private void emailStudent(String email, String subject) {
+        if (email == null || email.isEmpty()) {
+            toast("No student email is attached to this chat.");
+            return;
+        }
+        Intent mail = new Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:" + email));
+        mail.putExtra(Intent.EXTRA_SUBJECT, subject == null ? "CampusTrade" : subject);
+        mail.putExtra(Intent.EXTRA_TEXT, "Hello, I'm contacting you as a CampusTrade moderator.");
+        try {
+            host.startActivity(Intent.createChooser(mail, "Email student"));
+        } catch (android.content.ActivityNotFoundException e) {
+            host.ui.showSimpleMessage("Student email", email);
+        }
     }
 
     private LinearLayout.LayoutParams adminCellParams(boolean right) {
@@ -1218,6 +1589,7 @@ public class Admin {
 
     public void buildAdminReports(LinearLayout content) {
         if (!canUseAdmin()) return;
+        refreshReportsIfStale();
         LinearLayout tabs = host.ui.horizontal();
         int reportTabIndex = 0;
         for (String mode : new String[] {"Open", "History"}) {
@@ -1272,6 +1644,26 @@ public class Admin {
         addReportQueue(queue, host.showClosedReports, Integer.MAX_VALUE);
     }
 
+    /** Severity chips use grey, orange and red so priority is readable at a glance. */
+    private TextView priorityChip(String priority) {
+        String value = priority == null || priority.isEmpty() ? "Low" : priority;
+        int bg;
+        int ink;
+        if (value.equalsIgnoreCase("High")) {
+            bg = host.nightActive ? Color.rgb(64, 34, 34) : Color.rgb(255, 230, 230);
+            ink = host.nightActive ? Color.rgb(255, 150, 150) : Color.rgb(180, 30, 30);
+        } else if (value.equalsIgnoreCase("Medium")) {
+            bg = host.nightActive ? Color.rgb(60, 42, 24) : Color.rgb(255, 239, 220);
+            ink = host.nightActive ? Color.rgb(255, 184, 108) : Color.rgb(176, 86, 0);
+        } else {
+            bg = host.nightActive ? Color.rgb(48, 48, 52) : Color.rgb(238, 238, 238);
+            ink = host.muted;
+        }
+        TextView chip = host.ui.chip(value, bg, ink);
+        chip.setTextSize(10);
+        return chip;
+    }
+
     private int reportTypeCount(boolean closed, String type) {
         int count = 0;
         String wanted = type.equals("Student") ? "user" : type.toLowerCase(java.util.Locale.ROOT);
@@ -1283,10 +1675,10 @@ public class Admin {
         return count;
     }
 
-    // High-priority reports come first.
+    // Newest reports come first, whatever their priority.
     private void addReportQueue(LinearLayout content, boolean closed, int limit) {
         ArrayList<MainActivity.ModerationReport> ordered = new ArrayList<>(host.moderationReports);
-        java.util.Collections.sort(ordered, (a, b) -> Integer.compare(MainActivity.ModerationReport.priorityRank(b.priority), MainActivity.ModerationReport.priorityRank(a.priority)));
+        java.util.Collections.sort(ordered, (a, b) -> Long.compare(b.createdAt, a.createdAt));
         int shown = 0;
         String query = host.adminReportQuery == null ? "" : host.adminReportQuery.toLowerCase(java.util.Locale.ROOT);
         String typeFilter = host.adminReportFilter == null ? "All" : host.adminReportFilter;
@@ -1328,12 +1720,7 @@ public class Admin {
             if (closed) {
                 row.addView(host.ui.statusPill(report.state));
             } else {
-                int bg = report.priority.equals("High") ? host.ui.statusBackground("Awaiting")
-                        : host.nightActive ? Color.rgb(48, 48, 52) : Color.rgb(242, 240, 235);
-                int ink = report.priority.equals("High") ? host.ui.statusInk("Awaiting") : host.muted;
-                TextView priority = host.ui.chip(report.priority, bg, ink);
-                priority.setTextSize(10);
-                row.addView(priority);
+                row.addView(priorityChip(report.priority));
             }
             row.addView(host.new CampusAssetView(host, "chevron", host.muted), new LinearLayout.LayoutParams(host.ui.dp(18), host.ui.dp(18)));
             row.setOnClickListener(v -> showReportReview(report));
@@ -1589,6 +1976,323 @@ public class Admin {
         });
     }
 
+
+    /** Review the three-strike content queue and clear false positives. */
+    public void showContentFlags() {
+        if (!canUseAdmin()) return;
+        Dialog page = host.ui.fullScreenForm();
+        LinearLayout root = new LinearLayout(host);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(host.page);
+        root.addView(host.ui.pageHeader("Content warning queue",
+                "Flagged listings, chats and community posts", page::dismiss));
+        ScrollView scroll = new ScrollView(host);
+        LinearLayout list = new LinearLayout(host);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(host.ui.dp(20), host.ui.dp(4), host.ui.dp(20), host.ui.dp(20));
+        scroll.addView(list);
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        TextView loading = host.ui.bodyText("Loading content warnings...", host.muted, 12);
+        loading.setPadding(0, host.ui.dp(18), 0, 0);
+        list.addView(loading);
+        page.setContentView(root);
+        page.show();
+        Window window = page.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(host.page));
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
+        com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("contentFlags")
+                .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(50).get()
+                .addOnSuccessListener(snap -> {
+                    if (host.isDestroyed() || host.isFinishing()) return;
+                    list.removeAllViews();
+                    if (snap.getDocuments().isEmpty()) {
+                        list.addView(host.ui.emptyState("shield", "No content warnings",
+                                "Flagged content will appear here with the student and reason."));
+                        return;
+                    }
+                    for (com.google.firebase.firestore.DocumentSnapshot doc : snap.getDocuments()) {
+                        String email = doc.getString("userEmail");
+                        String uid = doc.getString("userId");
+                        String surface = doc.getString("surface");
+                        String content = doc.getString("content");
+                        String reasons = doc.getString("reasons");
+                        String status = doc.getString("status");
+                        Long strike = doc.getLong("strike");
+                        if (email == null) email = "";
+                        if (uid == null) uid = "";
+                        if (surface == null) surface = "app";
+                        if (content == null) content = "";
+                        if (reasons == null) reasons = "Content rule warning";
+                        if (status == null) status = "Warning";
+                        final String flagUid = uid;
+                        final String flagEmail = email;
+                        LinearLayout card = host.ui.card(host.surface(), 14, host.ui.dp(14));
+                        card.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+                        LinearLayout top = host.ui.horizontal();
+                        top.setGravity(Gravity.CENTER_VERTICAL);
+                        top.addView(host.ui.titleText(host.studentName(flagEmail), host.text, 14),
+                                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                        int chipBg = status.equalsIgnoreCase("Escalated")
+                                ? (host.nightActive ? Color.rgb(64, 34, 34) : Color.rgb(255, 230, 230))
+                                : (host.nightActive ? Color.rgb(60, 42, 24) : Color.rgb(255, 239, 220));
+                        int chipInk = status.equalsIgnoreCase("Escalated")
+                                ? (host.nightActive ? Color.rgb(255, 150, 150) : Color.rgb(180, 30, 30))
+                                : (host.nightActive ? Color.rgb(255, 184, 108) : Color.rgb(176, 86, 0));
+                        TextView chip = host.ui.chip(status, chipBg, chipInk);
+                        chip.setTextSize(9);
+                        top.addView(chip);
+                        card.addView(top);
+                        card.addView(host.ui.bodyText(flagEmail + " / " + surface
+                                + " / warning " + (strike == null ? "?" : strike), host.muted, 10));
+                        TextView why = host.ui.bodyText(reasons, host.text, 12);
+                        why.setPadding(0, host.ui.dp(7), 0, 0);
+                        card.addView(why);
+                        TextView preview = host.ui.bodyText("\"" + content + "\"", host.muted, 11);
+                        preview.setMaxLines(3);
+                        preview.setEllipsize(TextUtils.TruncateAt.END);
+                        preview.setPadding(0, host.ui.dp(6), 0, 0);
+                        card.addView(preview);
+                        if (status.equalsIgnoreCase("Escalated") || (strike != null && strike >= 3)) {
+                            Button clear = host.ui.secondaryButton("Clear this account's warnings");
+                            clear.setOnClickListener(v -> host.ui.dialog()
+                                    .setTitle("Clear content warnings?")
+                                    .setMessage("This removes the posting pause for " + flagEmail
+                                            + " on every device. Use it only after reviewing the content.")
+                                    .setNegativeButton("Cancel", null)
+                                    .setPositiveButton("Clear warnings", (d, which) -> {
+                                        java.util.Map<String, Object> clearDoc = new java.util.HashMap<>();
+                                        clearDoc.put("strikes", 0);
+                                        clearDoc.put("clearedAt", com.google.firebase.Timestamp.now());
+                                        clearDoc.put("clearedBy", host.currentStudentEmail);
+                                        clearDoc.put("userEmail", flagEmail);
+                                        com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                                                .collection("contentSanctions").document(flagUid)
+                                                .set(clearDoc, com.google.firebase.firestore.SetOptions.merge());
+                                        doc.getReference().update("status", "Cleared");
+                                        host.safety.clearContentStrikes(flagEmail);
+                                        host.notification.addNotification(flagEmail, "Content review",
+                                                "A moderator reviewed your account and cleared the posting pause.",
+                                                "messages", "");
+                                        host.notification.sendPush(flagEmail, "Content review",
+                                                "A moderator reviewed your account and cleared the posting pause.",
+                                                "messages", "");
+                                        page.dismiss();
+                                        showContentFlags();
+                                    }).show());
+                            LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(42));
+                            clearParams.topMargin = host.ui.dp(8);
+                            card.addView(clear, clearParams);
+                        }
+                        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                        cardParams.bottomMargin = host.ui.dp(10);
+                        list.addView(card, cardParams);
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    if (host.isDestroyed() || host.isFinishing()) return;
+                    list.removeAllViews();
+                    list.addView(host.ui.emptyState("flag", "Couldn't load content warnings",
+                            "Check the moderator Firestore access and try again."));
+                });
+    }
+
+    /** Suspended accounts and content-warning appeals are reviewed here. */
+    public void showAppeals() {
+        if (!canUseAdmin()) return;
+        Dialog page = host.ui.fullScreenForm();
+        LinearLayout root = new LinearLayout(host);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(host.page);
+        root.addView(host.ui.pageHeader("Account appeals", "Suspensions and content-warning reviews", page::dismiss));
+        ScrollView scroll = new ScrollView(host);
+        LinearLayout list = new LinearLayout(host);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(host.ui.dp(20), host.ui.dp(4), host.ui.dp(20), host.ui.dp(20));
+        scroll.addView(list);
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        TextView loading = host.ui.bodyText("Loading appeals...", host.muted, 12);
+        loading.setPadding(0, host.ui.dp(18), 0, 0);
+        list.addView(loading);
+        page.setContentView(root);
+        page.show();
+        Window window = page.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(host.page));
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
+        com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("appeals")
+                .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(50).get()
+                .addOnSuccessListener(snap -> {
+                    if (host.isDestroyed() || host.isFinishing()) return;
+                    list.removeAllViews();
+                    if (snap.getDocuments().isEmpty()) {
+                        list.addView(host.ui.emptyState("checklist", "No appeals",
+                                "Suspended students and content-warning appeals will appear here."));
+                        return;
+                    }
+                    for (com.google.firebase.firestore.DocumentSnapshot doc : snap.getDocuments()) {
+                        String uid = doc.getString("uid");
+                        String email = doc.getString("email");
+                        String name = doc.getString("name");
+                        String reason = doc.getString("reason");
+                        String status = doc.getString("status");
+                        if (status == null || status.isEmpty()) status = "Pending";
+                        if (uid == null) uid = doc.getId();
+                        if (email == null) email = "";
+                        if (name == null || name.isEmpty()) name = host.studentName(email);
+                        if (reason == null) reason = "";
+                        final String appealUid = uid;
+                        final String appealEmail = email;
+                        final String appealName = name;
+                        final String appealReason = reason;
+                        final boolean contentAppeal = reason.toUpperCase(java.util.Locale.ROOT)
+                                .contains("CONTENT WARNING APPEAL");
+                        LinearLayout card = host.ui.card(host.surface(), 14, host.ui.dp(14));
+                        card.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+                        LinearLayout top = host.ui.horizontal();
+                        top.setGravity(Gravity.CENTER_VERTICAL);
+                        top.addView(host.ui.titleText(appealName, host.text, 14),
+                                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                        top.addView(host.ui.statusPill(status));
+                        card.addView(top);
+                        card.addView(host.ui.bodyText(appealEmail
+                                + (contentAppeal ? " / content warnings" : " / suspended account"), host.muted, 11));
+                        TextView detail = host.ui.bodyText(contentAppeal
+                                ? appealReason.replace("CONTENT WARNING APPEAL:", "").trim() : appealReason,
+                                host.text, 12);
+                        detail.setPadding(0, host.ui.dp(8), 0, 0);
+                        card.addView(detail);
+                        long created = 0;
+                        Object stamp = doc.get("createdAt");
+                        if (stamp instanceof com.google.firebase.Timestamp) {
+                            created = ((com.google.firebase.Timestamp) stamp).toDate().getTime();
+                        }
+                        if (created > 0) {
+                            card.addView(host.ui.bodyText("Sent " + host.notification.alertTime(created),
+                                    host.muted, 10));
+                        }
+                        if (status.equalsIgnoreCase("Pending")) {
+                            LinearLayout actions = host.ui.horizontal();
+                            actions.setPadding(0, host.ui.dp(8), 0, 0);
+                            Button approve = host.ui.primaryButton(contentAppeal ? "Clear warnings" : "Restore account");
+                            approve.setOnClickListener(v -> approveAppeal(doc, appealUid, appealEmail,
+                                    appealName, contentAppeal, page));
+                            actions.addView(approve, new LinearLayout.LayoutParams(0, host.ui.dp(44), 1));
+                            TextView reject = host.ui.textButton("Reject");
+                            reject.setPadding(host.ui.dp(10), 0, host.ui.dp(4), 0);
+                            reject.setOnClickListener(v -> rejectAppeal(doc, appealEmail, page));
+                            actions.addView(reject, new LinearLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.WRAP_CONTENT, host.ui.dp(44)));
+                            card.addView(actions);
+                        }
+                        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                        cardParams.bottomMargin = host.ui.dp(10);
+                        list.addView(card, cardParams);
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    if (host.isDestroyed() || host.isFinishing()) return;
+                    list.removeAllViews();
+                    list.addView(host.ui.emptyState("flag", "Couldn't load appeals",
+                            "Check your moderator Firestore access and try again."));
+                });
+    }
+
+    private void approveAppeal(com.google.firebase.firestore.DocumentSnapshot doc, String uid,
+                               String email, String name, boolean contentAppeal, Dialog page) {
+        Runnable afterRestore = () -> {
+            java.util.Map<String, Object> fields = new java.util.HashMap<>();
+            fields.put("status", "Approved");
+            fields.put("reviewedAt", com.google.firebase.Timestamp.now());
+            fields.put("reviewedBy", host.currentStudentEmail);
+            fields.put("resolutionNote", contentAppeal
+                    ? "Content warnings cleared after review." : "Account restored after review.");
+            doc.getReference().update(fields);
+            if (contentAppeal) {
+                java.util.Map<String, Object> clear = new java.util.HashMap<>();
+                clear.put("strikes", 0);
+                clear.put("clearedAt", com.google.firebase.Timestamp.now());
+                clear.put("clearedBy", host.currentStudentEmail);
+                clear.put("userEmail", email);
+                com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        .collection("contentSanctions").document(uid)
+                        .set(clear, com.google.firebase.firestore.SetOptions.merge());
+                com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        .collection("contentFlags").whereEqualTo("userId", uid).limit(50).get()
+                        .addOnSuccessListener(flags -> {
+                            for (com.google.firebase.firestore.DocumentSnapshot flag : flags.getDocuments()) {
+                                flag.getReference().update("status", "Cleared",
+                                        "clearedAt", com.google.firebase.Timestamp.now(),
+                                        "clearedBy", host.currentStudentEmail);
+                            }
+                        });
+                host.safety.clearContentStrikes(email);
+            }
+            String message = contentAppeal
+                    ? "Your content warnings were reviewed and cleared. You can post again."
+                    : "Your appeal was approved. Your account can sign in again.";
+            host.notification.addNotification(email, "Appeal approved", message, "messages", "");
+            host.notification.sendPush(email, "Appeal approved", message, "messages", "");
+            Toast.makeText(host, "Appeal approved.", Toast.LENGTH_SHORT).show();
+            page.dismiss();
+            showAppeals();
+        };
+        if (contentAppeal) {
+            afterRestore.run();
+            return;
+        }
+        new com.campustrade.auth.data.AuthRepository().setAccountStatus(uid, "active",
+                new com.campustrade.auth.data.AuthRepository.SimpleCallback() {
+                    @Override public void onOk() { afterRestore.run(); }
+                    @Override public void onBad(String message) {
+                        Toast.makeText(host, "Couldn't restore the account: " + message,
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+    }
+
+    private void rejectAppeal(com.google.firebase.firestore.DocumentSnapshot doc, String email, Dialog page) {
+        LinearLayout form = new LinearLayout(host);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(0, host.ui.dp(4), 0, 0);
+        form.addView(host.ui.bodyText("Give the student a short reason. It is saved with the appeal and sent to them.",
+                host.muted, 11));
+        EditText note = host.ui.listingField(form, "Reason", "Why is the appeal being rejected?",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        note.setMinLines(2);
+        android.app.AlertDialog dialog = host.ui.dialog().setTitle("Reject appeal?")
+                .setView(form).setNegativeButton("Cancel", null)
+                .setPositiveButton("Reject", null).create();
+        dialog.setOnShowListener(shown -> dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String reason = host.ui.text(note).trim();
+                    if (reason.length() < 8) {
+                        note.setError("Add at least 8 characters");
+                        return;
+                    }
+                    java.util.Map<String, Object> fields = new java.util.HashMap<>();
+                    fields.put("status", "Rejected");
+                    fields.put("reviewedAt", com.google.firebase.Timestamp.now());
+                    fields.put("reviewedBy", host.currentStudentEmail);
+                    fields.put("resolutionNote", reason);
+                    doc.getReference().update(fields);
+                    host.notification.addNotification(email, "Appeal reviewed",
+                            "Your appeal was not approved. Reason: " + reason, "messages", "");
+                    host.notification.sendPush(email, "Appeal reviewed",
+                            "Your appeal was not approved. Reason: " + reason, "messages", "");
+                    dialog.dismiss();
+                    page.dismiss();
+                    showAppeals();
+                }));
+        dialog.show();
+    }
 
     public void showFeedback() {
         if (!canUseAdmin()) return;

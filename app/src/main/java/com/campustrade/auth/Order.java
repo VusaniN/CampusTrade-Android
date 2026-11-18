@@ -675,21 +675,26 @@ public class Order {
     /** Apply the order status unless the seller chose one. */
     public boolean applyListingState(MainActivity.Product product) {
         if (product.status.equals("Paused") || product.status.equals("Draft")) return false;
-        String next = listingStateFromOrders(product.id);
+        String next;
+        if (product.quantity <= 0) {
+            next = "Sold";
+        } else {
+            next = listingStateFromOrders(product.id);
+            // A historical sold state is only reopened by editing inventory;
+            // otherwise old single-quantity listings would return to market.
+            if (next.equals("Available") && product.status.equals("Sold")) return false;
+        }
         if (next.equals(product.status)) return false;
-        // Sold can also be set manually; never reopen it from an old cancelled order.
-        if (next.equals("Available") && product.status.equals("Sold")) return false;
         product.status = next;
         return true;
     }
 
-    /** Completed wins, then confirmed, then requested. Otherwise it is free. */
+    /** Active orders matter; completed orders are represented by remaining quantity. */
     public String listingStateFromOrders(String productId) {
         boolean requested = false;
         String confirmed = "";
         for (MainActivity.TransactionRecord record : host.transactions) {
             if (!record.productId.equals(productId)) continue;
-            if (record.status.equals(MainActivity.TransactionRecord.COMPLETED)) return "Sold";
             if (record.status.equals(MainActivity.TransactionRecord.HELD)) confirmed = record.listingState();
             else if (record.status.equals(MainActivity.TransactionRecord.REQUESTED)) requested = true;
         }
@@ -993,6 +998,10 @@ public class Order {
             Toast.makeText(host, "That's your own listing.", Toast.LENGTH_SHORT).show();
             return;
         }
+        if (product.quantity <= 0) {
+            host.ui.showSimpleMessage("Sold out", "This listing has no stock left. The seller can update the quantity to reopen it.");
+            return;
+        }
         if (product.hidden || !product.status.equals("Available")) {
             showTransactionHistory();
             return;
@@ -1150,7 +1159,13 @@ public class Order {
                 pay.setText("Sending...");
                 new Handler(Looper.getMainLooper()).postDelayed(() -> {
                     if (host.isDestroyed() || !page.isShowing()) return;
-                    // Check the listing again in case another student took it.
+                    // Check the listing again in case another student took it or stock ran out.
+                    if (product.quantity <= 0) {
+                        pay.setEnabled(true);
+                        pay.setText("Sold out");
+                        host.ui.showSimpleMessage("Sold out", "The seller has no stock left for this listing.");
+                        return;
+                    }
                     if (product.hidden || !product.status.equals("Available")) {
                         page.dismiss();
                         showTransactionHistory();
@@ -2721,6 +2736,19 @@ public class Order {
     /** Completion is seller-only and requires the buyer's photo. */
     private void confirmSellerVerification(MainActivity.TransactionRecord order) {
         if (!order.isSeller(host.currentStudentEmail) || !order.collectionProofPending()) return;
+        MainActivity.Product stock = null;
+        for (MainActivity.Product product : host.products) {
+            if (product.id.equals(order.productId)) stock = product;
+        }
+        if (stock == null) {
+            host.ui.showSimpleMessage("Listing missing", "This listing is no longer on this phone, so the handover can't be verified.");
+            return;
+        }
+        if (stock.quantity <= 0) {
+            host.ui.showSimpleMessage("Stock is zero", "Dispatch is blocked while the listing quantity is zero. "
+                    + "Edit the listing and add stock before verifying collection.");
+            return;
+        }
         host.ui.dialog()
                 .setTitle("Verify collection?")
                 .setMessage("Only verify after you have reviewed the buyer's photo and the handover is real. This marks the item sold, completes the order and generates an invoice. It cannot be undone from this screen.")
@@ -2736,7 +2764,10 @@ public class Order {
                         return;
                     }
                     for (MainActivity.Product product : host.products) if (product.id.equals(order.productId)) {
-                        product.status = order.listingState();
+                        boolean wasPaused = product.status.equals("Paused") || product.status.equals("Draft");
+                        product.quantity = Math.max(0, product.quantity - 1);
+                        product.status = product.quantity > 0
+                                ? (wasPaused ? "Paused" : "Available") : "Sold";
                         product.updatedTime = order.sellerVerifiedTime > 0 ? order.sellerVerifiedTime : System.currentTimeMillis();
                         host.market.cloudMirrorListing(product, false);
                     }
@@ -2904,6 +2935,23 @@ public class Order {
 
     /** Seller confirms a request; other requests for the listing close. */
     public void approvePurchaseRequest(MainActivity.TransactionRecord order) {
+        MainActivity.Product stock = null;
+        for (MainActivity.Product product : host.products) {
+            if (product.id.equals(order.productId)) stock = product;
+        }
+        if (stock == null) {
+            host.ui.showSimpleMessage("Listing missing", "The listing behind this request is no longer on this phone.");
+            return;
+        }
+        if (stock.quantity <= 0) {
+            host.ui.showSimpleMessage("Sold out", "Stock is zero, so this request can't be dispatched. "
+                    + "Update the listing quantity before approving it.");
+            return;
+        }
+        if (stock.hidden || stock.status.equals("Paused") || stock.status.equals("Draft")) {
+            host.ui.showSimpleMessage("Listing unavailable", "Restore this listing before approving the request.");
+            return;
+        }
         if (!order.approveBySeller(host.currentStudentEmail)) return;
         long now = System.currentTimeMillis();
         java.util.ArrayList<MainActivity.TransactionRecord> superseded = new java.util.ArrayList<>();

@@ -45,7 +45,7 @@ public class ListingRepository {
                              String description, double price, String category, String condition,
                              String specs, String location, String delivery, String status, String imageURL,
                              java.util.List<String> photos, String documentURL, String documentName,
-                             String documentMime, long documentSize, IdCallback cb) {
+                             String documentMime, long documentSize, int quantity, IdCallback cb) {
         Map<String, Object> doc = new HashMap<>();
         doc.put("sellerID", sellerID);
         doc.put("sellerName", sellerName != null ? sellerName : "");
@@ -65,6 +65,7 @@ public class ListingRepository {
         doc.put("documentMime", documentMime != null ? documentMime : "");
         doc.put("documentSize", Math.max(0, documentSize));
         doc.put("negotiable", true);
+        doc.put("quantity", Math.max(1, Math.min(999, quantity)));
         doc.put("viewCount", 0);
         doc.put("favouriteCount", 0);
         doc.put("createdAt", Timestamp.now());
@@ -133,7 +134,7 @@ public class ListingRepository {
                        String documentMime, long documentSize, IdCallback cb) {
         createWithId(null, sellerID, sellerName, listingN, description, price, category, condition,
                 "", location, delivery, status, imageURL, photos, documentURL, documentName,
-                documentMime, documentSize, cb);
+                documentMime, documentSize, 1, cb);
     }
 
     /** Load the newest 20 listings. */

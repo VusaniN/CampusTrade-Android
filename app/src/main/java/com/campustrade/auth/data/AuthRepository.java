@@ -2,6 +2,7 @@ package com.campustrade.auth.data;
 
 import com.campustrade.auth.model.User;
 import com.google.firebase.Timestamp;
+import com.google.firebase.auth.EmailAuthProvider;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.FirebaseFirestore;
@@ -81,9 +82,10 @@ public class AuthRepository {
                     batch.set(db.collection("publicProfiles").document(uid), publicDoc);
                     batch.commit()
                             .addOnSuccessListener(v -> {
-                                // The student logs in again after clicking the link.
-                                // Sign out until the campus email is verified.
-                                auth.signOut();
+                                // Keep the unverified Firebase session so the
+                                // countdown screen can resend without asking
+                                // for the password again. The app session is
+                                // still locked until verification succeeds.
                                 cb.onVerify(email, "Account created. We sent a verification link to "
                                         + email + ". Verify it, then log in.");
                             })
@@ -109,10 +111,10 @@ public class AuthRepository {
                     }
                     if (!user.isEmailVerified()) {
 
-                        // Sign out unverified accounts after resending the link.
+                        // Resend while keeping the unverified session so the
+                        // verification screen can resend without a password.
                         user.sendEmailVerification();
                         String email = user.getEmail() != null ? user.getEmail() : stuEmail;
-                        auth.signOut();
                         cb.onVerify(email, "Verify your campus email before signing in. "
                                 + "We sent a new link to " + email + ".");
                         return;
@@ -132,6 +134,83 @@ public class AuthRepository {
         auth.sendPasswordResetEmail(stuEmail)
                 .addOnSuccessListener(v -> cb.onOk())
                 .addOnFailureListener(e -> cb.onBad(resetFriendly(e)));
+    }
+
+    /** Resend the verification link using the kept unverified session. */
+    public void resendVerification(SimpleCallback cb) {
+        FirebaseUser user = auth.getCurrentUser();
+        if (user == null) {
+            cb.onBad("Log in again with your password, then resend the link.");
+            return;
+        }
+        user.sendEmailVerification()
+                .addOnSuccessListener(v -> cb.onOk())
+                .addOnFailureListener(e -> cb.onBad(resetFriendly(e)));
+    }
+
+    /** Refresh the Firebase user after the student taps the email link. */
+    public void checkEmailVerified(SimpleCallback cb) {
+        FirebaseUser user = auth.getCurrentUser();
+        if (user == null) {
+            cb.onBad("Log in again to finish verifying your email.");
+            return;
+        }
+        user.reload().addOnSuccessListener(v -> {
+            FirebaseUser fresh = auth.getCurrentUser();
+            if (fresh != null && fresh.isEmailVerified()) cb.onOk();
+            else cb.onBad("That link isn't verified yet. Open the newest email and try again.");
+        }).addOnFailureListener(e -> cb.onBad("Couldn't check the link. Check your connection."));
+    }
+
+    /** In-app password change, after proving the current password. */
+    public void changePassword(String oldPassword, String newPassword, SimpleCallback cb) {
+        FirebaseUser user = auth.getCurrentUser();
+        if (user == null || user.getEmail() == null) {
+            cb.onBad("You aren't signed in. Log in again.");
+            return;
+        }
+        if (newPassword == null || newPassword.length() < 10) {
+            cb.onBad("Use a new password with at least 10 characters.");
+            return;
+        }
+        com.google.firebase.auth.AuthCredential credential =
+                EmailAuthProvider.getCredential(user.getEmail(), oldPassword);
+        user.reauthenticate(credential)
+                .addOnSuccessListener(v -> user.updatePassword(newPassword)
+                        .addOnSuccessListener(done -> cb.onOk())
+                        .addOnFailureListener(e -> cb.onBad(passwordFriendly(e))))
+                .addOnFailureListener(e -> cb.onBad("The current password is incorrect."));
+    }
+
+    private String passwordFriendly(Exception e) {
+        String code = "";
+        if (e instanceof com.google.firebase.auth.FirebaseAuthException) {
+            code = ((com.google.firebase.auth.FirebaseAuthException) e).getErrorCode();
+        }
+        if ("ERROR_WEAK_PASSWORD".equals(code)) return "Use a stronger password (10+ characters).";
+        if ("ERROR_REQUIRES_RECENT_LOGIN".equals(code)) return "Log in again before changing the password.";
+        if ("ERROR_NETWORK_REQUEST_FAILED".equals(code)) return "No connection. Check the internet and try again.";
+        return "The password couldn't be changed. Try again.";
+    }
+
+    /** File an appeal from a suspended login before it is signed out. */
+    public void submitAppeal(String uid, String email, String name, String reason, SimpleCallback cb) {
+        if (uid == null || uid.isEmpty()) {
+            cb.onBad("Log in again to send an appeal.");
+            return;
+        }
+        Map<String, Object> appeal = new HashMap<>();
+        appeal.put("uid", uid);
+        appeal.put("email", email == null ? "" : email);
+        appeal.put("name", name == null ? "" : name);
+        appeal.put("reason", reason == null ? "" : reason.trim());
+        appeal.put("status", "Pending");
+        appeal.put("createdAt", Timestamp.now());
+        // A new document per appeal keeps old reviews and lets a student ask
+        // again after a rejection without overwriting the moderation record.
+        db.collection("appeals").document(uid + "_" + System.currentTimeMillis()).set(appeal)
+                .addOnSuccessListener(v -> cb.onOk())
+                .addOnFailureListener(e -> cb.onBad(msg(e)));
     }
 
     private String resetFriendly(Exception e) {

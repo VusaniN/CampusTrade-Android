@@ -40,6 +40,8 @@ public class Inbox {
     private final MainActivity host;
     private com.google.firebase.firestore.ListenerRegistration typingListener;
     private long lastTypingPing = 0;
+    private boolean helperThinking = false;
+    private static final long ADMIN_CHAT_IDLE_MS = 60L * 60L * 1000L;
 
     public Inbox(MainActivity host) {
         this.host = host;
@@ -205,7 +207,10 @@ public class Inbox {
                 status.addView(badge, badgeParams);
             }
             row.addView(status);
-            row.setOnClickListener(v -> showConversation(peer));
+            row.setOnClickListener(v -> {
+                host.chatReturnTab = "Inbox";
+                showConversation(peer);
+            });
             LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             rowParams.topMargin = host.ui.dp(12);
             container.addView(row, rowParams);
@@ -222,7 +227,8 @@ public class Inbox {
     // Keep order IDs out of chat previews.
     public String conversationPreview(String body) {
         if (body == null) return "";
-        String cleaned = body.replaceAll("\\bCT-[A-Z0-9]{8}\\b", "")
+        String cleaned = body.replace("[Admin]", "").replace("[Chat closed]", "")
+                .replaceAll("\\bCT-[A-Z0-9]{8}\\b", "")
                 .replaceAll("\\s{2,}", " ")
                 .replaceAll("^[\\s\\-–—:]+|[\\s\\-–—:]+$", "")
                 .trim();
@@ -241,14 +247,150 @@ public class Inbox {
 
     /** Admin replies use a reserved peer id and must always show as "Admin". */
     public boolean isAdminConversation(String peer) {
-        if (peer == null) return false;
-        if (peer.equals("admin@campustrade.local")) return true;
+        if (peer == null || peer.isEmpty() || peer.equals(HelperBot.PEER)) return false;
+        if (peer.equals(Constants.ADMIN_CHAT_EMAIL)) return true;
+        if (host.adminOnlySession || host.adminAccess || host.adminAccount) return true;
+        String email = CloudSync.emailForUid(host, peer);
+        if (email != null && (email.equalsIgnoreCase(Constants.STRICT_ADMIN_EMAIL)
+                || email.equalsIgnoreCase(Constants.ADMIN_CHAT_EMAIL))) return true;
         for (MainActivity.ChatMessage message : host.chatMessages) {
             if (!inConversation(message, peer)) continue;
             if ("Admin".equalsIgnoreCase(message.senderName)
                     || (message.body != null && message.body.startsWith("[Admin]"))) return true;
         }
         return false;
+    }
+
+    public boolean isClosureMessage(String body) {
+        return body != null && body.contains("[Chat closed]");
+    }
+
+    public String closureReason(String body) {
+        if (!isClosureMessage(body)) return "";
+        int index = body.indexOf("[Chat closed]") + "[Chat closed]".length();
+        return body.substring(index).trim();
+    }
+
+    public MainActivity.ChatMessage latestMessage(String peer) {
+        MainActivity.ChatMessage latest = null;
+        for (MainActivity.ChatMessage message : host.chatMessages) {
+            if (!inConversation(message, peer)) continue;
+            if (latest == null || message.time >= latest.time) latest = message;
+        }
+        return latest;
+    }
+
+    /** A resolved report or one quiet hour ends an admin conversation. */
+    public boolean adminChatClosed(String peer) {
+        if (peer == null || peer.isEmpty() || !isAdminConversation(peer)) return false;
+        MainActivity.ChatMessage latest = latestMessage(peer);
+        if (latest == null) return false;
+        if (isClosureMessage(latest.body)) return true;
+        return System.currentTimeMillis() - latest.time > ADMIN_CHAT_IDLE_MS;
+    }
+
+    public String adminChatClosedReason(String peer) {
+        MainActivity.ChatMessage latest = latestMessage(peer);
+        if (latest == null) return "";
+        String reason = closureReason(latest.body);
+        if (!reason.isEmpty()) return reason;
+        if (System.currentTimeMillis() - latest.time > ADMIN_CHAT_IDLE_MS) {
+            return "Closed automatically after 1 hour of inactivity.";
+        }
+        return "";
+    }
+
+    /** Close a report conversation, leaving a visible marker for both sides. */
+    public void closeAdminChat(String peer, String reason) {
+        if (peer == null || peer.isEmpty() || peer.equals(HelperBot.PEER)) return;
+        MainActivity.ChatMessage latest = latestMessage(peer);
+        if (latest != null && isClosureMessage(latest.body)) return;
+        String detail = reason == null ? "" : reason.trim();
+        if (detail.length() > 300) detail = detail.substring(0, 300).trim();
+        String body = "[Admin] [Chat closed]"
+                + (detail.isEmpty() ? " This conversation has been closed." : " " + detail)
+                + " Email " + Constants.ADMIN_CHAT_EMAIL + " to open a new report conversation.";
+        host.chatMessages.add(new MainActivity.ChatMessage(host.currentStudentEmail, peer,
+                host.currentStudentName, body, System.currentTimeMillis(), false));
+        saveMessages();
+        if (peer.equals(host.openChatPeer) && host.openChatContainer != null) {
+            renderChat(host.openChatContainer, peer);
+            refreshOpenChatComposer();
+        }
+        cloudSendToPeer(peer, body);
+    }
+
+    /** Resolve an email to its Firebase ID first so one student keeps one thread. */
+    public void closeAdminChatForEmail(String email, String reason) {
+        final String clean = host.normalizeEmail(email);
+        if (clean.isEmpty()) return;
+        CloudSync.peerUid(host, clean, new CloudSync.StrCallback() {
+            @Override public void onOk(String peerUid) {
+                closeAdminChat(peerUid, reason);
+            }
+            @Override public void onBad(String message) {
+                closeAdminChat(clean, reason);
+            }
+        });
+    }
+
+    /** Turn an over-age admin thread into a closed thread before showing it. */
+    public void expireAdminChatIfNeeded(String peer) {
+        if (peer == null || peer.isEmpty() || !isAdminConversation(peer)) return;
+        MainActivity.ChatMessage latest = latestMessage(peer);
+        if (latest == null || isClosureMessage(latest.body)) return;
+        if (System.currentTimeMillis() - latest.time > ADMIN_CHAT_IDLE_MS) {
+            closeAdminChat(peer, "Closed automatically after 1 hour of inactivity.");
+        }
+    }
+
+    public void refreshOpenChatComposer() {
+        if (host.openChatComposer == null || host.openChatClosedNotice == null) return;
+        String peer = host.openChatPeer;
+        boolean closed = adminChatClosed(peer);
+        host.openChatComposer.setVisibility(closed ? View.GONE : View.VISIBLE);
+        host.openChatClosedNotice.setVisibility(closed ? View.VISIBLE : View.GONE);
+        if (closed) {
+            String reason = adminChatClosedReason(peer);
+            boolean moderator = host.adminOnlySession || host.adminAccess || host.adminAccount;
+            host.openChatClosedNotice.setText("Chat closed"
+                    + (reason.isEmpty() ? "" : "\n" + reason)
+                    + (moderator
+                    ? "\nTap here to reopen this conversation."
+                    : "\nEmail " + Constants.ADMIN_CHAT_EMAIL + " to open a new report conversation."));
+        }
+    }
+
+    /** A moderator can reopen a closed thread for an active report. */
+    public void reopenAdminChat(String peer) {
+        if (peer == null || peer.isEmpty() || peer.equals(HelperBot.PEER)) return;
+        String body = "[Admin] Chat reopened by the campus moderator.";
+        host.chatMessages.add(new MainActivity.ChatMessage(host.currentStudentEmail, peer,
+                host.currentStudentName, body, System.currentTimeMillis(), false));
+        saveMessages();
+        if (peer.equals(host.openChatPeer) && host.openChatContainer != null) {
+            renderChat(host.openChatContainer, peer);
+            refreshOpenChatComposer();
+        }
+        cloudSendToPeer(peer, body);
+    }
+
+    /** Open a report thread, reopening it if the one-hour window expired. */
+    public void openReportChat(String emailOrUid) {
+        host.chatReturnTab = "AdminChat";
+        final String original = emailOrUid == null ? "" : emailOrUid.trim();
+        if (original.isEmpty()) return;
+        CloudSync.peerUid(host, original, new CloudSync.StrCallback() {
+            @Override public void onOk(String peerUid) {
+                rekeyPeer(original, peerUid);
+                if (adminChatClosed(peerUid)) reopenAdminChat(peerUid);
+                showConversation(peerUid);
+            }
+            @Override public void onBad(String message) {
+                if (adminChatClosed(original)) reopenAdminChat(original);
+                showConversation(original);
+            }
+        });
     }
 
     // Save the message here first; show a toast if the cloud send fails.
@@ -340,6 +482,7 @@ public class Inbox {
         if (host.openChatPeer.equals(from) && host.openChatDialog != null && host.openChatDialog.isShowing()) {
             host.openChatPeer = to;
             if (host.openChatContainer != null) renderChat(host.openChatContainer, to);
+            refreshOpenChatComposer();
         }
         if (changed) saveMessages();
     }
@@ -466,6 +609,74 @@ public class Inbox {
         }).addOnFailureListener(e -> { });
     }
 
+    /** Pull recent direct chats for the moderator's Student chat screen. */
+    public void syncAdminChats(Runnable done) {
+        final String uid = CloudSync.uid(host);
+        if (uid.isEmpty()) {
+            if (done != null) done.run();
+            return;
+        }
+        com.google.firebase.firestore.FirebaseFirestore db = com.google.firebase.firestore.FirebaseFirestore.getInstance();
+        db.collection("chats").whereEqualTo("buyerID", uid).limit(40).get()
+                .addOnCompleteListener(buyTask -> db.collection("chats").whereEqualTo("sellerID", uid).limit(40)
+                        .get().addOnCompleteListener(sellTask -> {
+                            if (host.isDestroyed() || host.isFinishing()) {
+                                if (done != null) done.run();
+                                return;
+                            }
+                            java.util.LinkedHashMap<String, com.google.firebase.firestore.DocumentSnapshot> unique =
+                                    new java.util.LinkedHashMap<>();
+                            try {
+                                if (buyTask.getResult() != null) {
+                                    for (com.google.firebase.firestore.DocumentSnapshot doc
+                                            : buyTask.getResult().getDocuments()) unique.put(doc.getId(), doc);
+                                }
+                            } catch (Exception ignored) { }
+                            try {
+                                if (sellTask.getResult() != null) {
+                                    for (com.google.firebase.firestore.DocumentSnapshot doc
+                                            : sellTask.getResult().getDocuments()) unique.put(doc.getId(), doc);
+                                }
+                            } catch (Exception ignored) { }
+                            pullAdminChatThreads(uid, new java.util.ArrayList<>(unique.values()), 0, done);
+                        }));
+    }
+
+    private void pullAdminChatThreads(String uid,
+                                      java.util.List<com.google.firebase.firestore.DocumentSnapshot> chats,
+                                      int index, Runnable done) {
+        if (index >= chats.size() || index >= 30) {
+            if (done != null) done.run();
+            return;
+        }
+        com.google.firebase.firestore.DocumentSnapshot chat = chats.get(index);
+        String buyerId = chat.getString("buyerID");
+        String sellerId = chat.getString("sellerID");
+        final String peer = uid.equals(buyerId) ? sellerId : buyerId;
+        if (peer == null || peer.isEmpty()) {
+            pullAdminChatThreads(uid, chats, index + 1, done);
+            return;
+        }
+        cacheChatId(peer, chat.getId());
+        CloudSync.peerUid(host, peer, new CloudSync.StrCallback() {
+            @Override public void onOk(String value) { }
+            @Override public void onBad(String message) { }
+        });
+        new ChatRepository().messages(chat.getId(), new ChatRepository.MessageListCallback() {
+            @Override public void onOk(java.util.List<Message> items) {
+                if (host.isDestroyed() || host.isFinishing()) {
+                    if (done != null) done.run();
+                    return;
+                }
+                mergeRemoteMessages(uid, peer, items, false);
+                pullAdminChatThreads(uid, chats, index + 1, done);
+            }
+            @Override public void onBad(String message) {
+                pullAdminChatThreads(uid, chats, index + 1, done);
+            }
+        });
+    }
+
     // Load up to 12 chats so sync stays quick.
     /** Merge the loaded chats and redraw Inbox once if anything new arrived. */
     private void pullChatThreads(String uid, java.util.List<com.google.firebase.firestore.DocumentSnapshot> chats,
@@ -548,6 +759,7 @@ public class Inbox {
                         if (open) {
                             if (merged && host.openChatContainer != null) {
                                 renderChat(host.openChatContainer, peerUid);
+                                refreshOpenChatComposer();
                                 final ScrollView target = host.openChatScroll;
                                 if (target != null) target.post(() -> target.fullScroll(View.FOCUS_DOWN));
                             }
@@ -572,7 +784,12 @@ public class Inbox {
     void scheduleHelperReply(String question, final LinearLayout messages, final ScrollView scroll,
                              final Dialog dialog, final TextView typingStatus) {
         final long started = System.currentTimeMillis();
-        if (typingStatus != null) typingStatus.setText("Thinking...");
+        helperThinking = true;
+        if (typingStatus != null) typingStatus.setText("Virtual assistant");
+        if (dialog.isShowing()) {
+            renderChat(messages, HelperBot.PEER);
+            scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+        }
         HelperBotAI.ask(question, new HelperBotAI.Callback() {
             @Override public void onReply(String reply) {
                 finishHelperReply(reply, started, messages, scroll, dialog, typingStatus);
@@ -588,6 +805,7 @@ public class Inbox {
         long delay = Math.max(0, 700 - (System.currentTimeMillis() - started));
         messages.postDelayed(() -> {
             if (host.isDestroyed() || host.isFinishing()) return;
+            helperThinking = false;
             if (typingStatus != null) typingStatus.setText("Virtual assistant");
             host.chatMessages.add(new MainActivity.ChatMessage(HelperBot.PEER, host.currentStudentEmail, HelperBot.NAME,
                     answer, System.currentTimeMillis(), true));
@@ -630,8 +848,15 @@ public class Inbox {
                 return;
             }
             sheet.dismiss();
+            host.chatReturnTab = "Inbox";
             showConversation(peer);
         });
+    }
+
+    /** Let a student start a fresh live conversation with the campus moderator. */
+    public void openAdminChat() {
+        host.chatReturnTab = "Inbox";
+        showConversation(Constants.ADMIN_CHAT_EMAIL);
     }
 
     public boolean inConversation(MainActivity.ChatMessage m, String peer) {
@@ -651,6 +876,7 @@ public class Inbox {
             Toast.makeText(host, "This chat is blocked. Unblock the student in Settings first.", Toast.LENGTH_LONG).show();
             return;
         }
+        expireAdminChatIfNeeded(peer);
         for (MainActivity.ChatMessage m : host.chatMessages) if (inConversation(m, peer) && m.recipient.equals(host.currentStudentEmail)) m.read = true;
         saveMessages();
         Dialog dialog = new Dialog(host);
@@ -701,6 +927,33 @@ public class Inbox {
         messages.setPadding(host.ui.dp(16), host.ui.dp(8), host.ui.dp(16), host.ui.dp(16));
         scroll.addView(messages);
         layout.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        TextView closedNotice = host.ui.bodyText("", host.muted, 12);
+        closedNotice.setGravity(Gravity.CENTER);
+        closedNotice.setPadding(host.ui.dp(16), host.ui.dp(12), host.ui.dp(16), host.ui.dp(12));
+        closedNotice.setBackground(host.ui.strokedRound(host.surface(), 12, host.line));
+        closedNotice.setVisibility(View.GONE);
+        closedNotice.setOnClickListener(v -> {
+            String active = host.openChatPeer.isEmpty() ? peer : host.openChatPeer;
+            if (host.adminOnlySession || host.adminAccess || host.adminAccount) {
+                reopenAdminChat(active);
+                return;
+            }
+            android.content.Intent mail = new android.content.Intent(android.content.Intent.ACTION_SENDTO,
+                    android.net.Uri.parse("mailto:" + Constants.STRICT_ADMIN_EMAIL));
+            mail.putExtra(android.content.Intent.EXTRA_SUBJECT, "CampusTrade report conversation");
+            mail.putExtra(android.content.Intent.EXTRA_TEXT,
+                    "Hello campus team,\n\nI'd like to open a new report conversation.\n\nStudent: "
+                            + host.currentStudentEmail + "\n");
+            try {
+                host.startActivity(android.content.Intent.createChooser(mail, "Email campus admin"));
+            } catch (android.content.ActivityNotFoundException e) {
+                Toast.makeText(host, Constants.STRICT_ADMIN_EMAIL, Toast.LENGTH_LONG).show();
+            }
+        });
+        LinearLayout.LayoutParams closedParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        closedParams.setMargins(host.ui.dp(16), host.ui.dp(4), host.ui.dp(16), host.ui.dp(10));
+        layout.addView(closedNotice, closedParams);
         LinearLayout composer = host.ui.horizontal();
         composer.setGravity(Gravity.CENTER_VERTICAL);
         composer.setPadding(host.ui.dp(12), host.ui.dp(12), host.ui.dp(12), host.ui.dp(16));
@@ -733,12 +986,28 @@ public class Inbox {
             String body = host.ui.text(message).trim();
             if (body.isEmpty()) return;
             String active = dialog.isShowing() && !host.openChatPeer.isEmpty() ? host.openChatPeer : peer;
+            if (adminChatClosed(active)) {
+                Toast.makeText(host, "This chat is closed. Email " + Constants.ADMIN_CHAT_EMAIL
+                        + " to open a new report conversation.", Toast.LENGTH_LONG).show();
+                refreshOpenChatComposer();
+                return;
+            }
             boolean adminSender = host.adminAccount || host.adminAccess || host.adminOnlySession;
             if (adminSender && !active.equals(HelperBot.PEER)) body = "[Admin] " + body;
+            if (!adminSender && !active.equals(HelperBot.PEER)) {
+                if (host.safety.postingPausedDialog(host.currentStudentEmail)) return;
+                CampusSafety.ContentScan scan = host.safety.reviewContent(host.currentStudentEmail,
+                        host.currentUid, "chat", body);
+                if (scan.flagged) {
+                    host.safety.warnIfFlagged(scan, null);
+                    return;
+                }
+            }
             host.chatMessages.add(new MainActivity.ChatMessage(host.currentStudentEmail, active, host.currentStudentName, body, System.currentTimeMillis(), false));
             saveMessages();
             message.setText("");
             renderChat(messages, active);
+            refreshOpenChatComposer();
             scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
             if (active.equals(HelperBot.PEER)) {
                 scheduleHelperReply(body, messages, scroll, dialog, typingStatus);
@@ -754,17 +1023,25 @@ public class Inbox {
                 typingListener.remove();
                 typingListener = null;
             }
+            helperThinking = false;
+            String returnTab = host.chatReturnTab == null || host.chatReturnTab.isEmpty()
+                    ? "Inbox" : host.chatReturnTab;
             host.openChatPeer = "";
             host.openChatContainer = null;
             host.openChatScroll = null;
             host.openChatDialog = null;
-            host.showAppScreen("Inbox");
+            host.openChatComposer = null;
+            host.openChatClosedNotice = null;
+            host.showAppScreen(returnTab);
         });
         dialog.show();
         host.openChatPeer = peer;
         host.openChatContainer = messages;
         host.openChatScroll = scroll;
         host.openChatDialog = dialog;
+        host.openChatComposer = composer;
+        host.openChatClosedNotice = closedNotice;
+        refreshOpenChatComposer();
         if (dialog.getWindow() != null) {
             dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(host.page));
             dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
@@ -777,6 +1054,7 @@ public class Inbox {
                 if (host.isDestroyed() || host.isFinishing()) return;
                 String active = dialog.isShowing() && !host.openChatPeer.isEmpty() ? host.openChatPeer : peer;
                 renderChat(messages, active);
+                refreshOpenChatComposer();
                 scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
                 listenForTyping(active, typingStatus, dialog);
             });
@@ -893,6 +1171,27 @@ public class Inbox {
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                 lastDay = day;
             }
+            if (isClosureMessage(m.body)) {
+                String reason = closureReason(m.body);
+                LinearLayout closed = host.ui.card(host.page, 0, host.ui.dp(12));
+                closed.setBackground(host.ui.strokedRound(host.surface(), 12, host.line));
+                TextView closedTitle = host.ui.titleText("Chat closed", host.text, 12);
+                closedTitle.setGravity(Gravity.CENTER);
+                closed.addView(closedTitle);
+                if (!reason.isEmpty()) {
+                    TextView closedReason = host.ui.bodyText(reason, host.muted, 11);
+                    closedReason.setGravity(Gravity.CENTER);
+                    closedReason.setPadding(0, host.ui.dp(4), 0, 0);
+                    closed.addView(closedReason);
+                }
+                LinearLayout.LayoutParams closedParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                closedParams.topMargin = host.ui.dp(8);
+                closedParams.bottomMargin = host.ui.dp(8);
+                container.addView(closed, closedParams);
+                shown++;
+                continue;
+            }
             boolean mine = m.sender.equals(host.currentStudentEmail);
             LinearLayout line = host.ui.horizontal();
             line.setGravity(mine ? Gravity.END : Gravity.START);
@@ -902,7 +1201,9 @@ public class Inbox {
             bubble.setPadding(host.ui.dp(13), host.ui.dp(9), host.ui.dp(13), host.ui.dp(8));
             bubble.setBackground(mine ? host.ui.round(host.blue, 14)
                     : host.ui.strokedRound(host.surface(), 14, host.line));
-            TextView body = host.ui.bodyText(m.body, mine ? Color.WHITE : host.text, 14);
+            String shownBody = m.body.startsWith("[Admin] ")
+                    ? m.body.substring("[Admin] ".length()) : m.body;
+            TextView body = host.ui.bodyText(shownBody, mine ? Color.WHITE : host.text, 14);
             body.setMaxWidth(bubbleMax - host.ui.dp(26));
             bubble.addView(body);
             String stamp = host.messageTime(m.time);
@@ -918,6 +1219,22 @@ public class Inbox {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             lineParams.topMargin = host.ui.dp(5);
             container.addView(line, lineParams);
+            shown++;
+        }
+        if (peer.equals(HelperBot.PEER) && helperThinking) {
+            LinearLayout line = host.ui.horizontal();
+            line.setGravity(Gravity.START);
+            line.setPadding(0, host.ui.dp(5), host.ui.dp(38), 0);
+            LinearLayout bubble = new LinearLayout(host);
+            bubble.setPadding(host.ui.dp(15), host.ui.dp(7), host.ui.dp(15), host.ui.dp(7));
+            bubble.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+            TextView dots = host.ui.bodyText("…", host.muted, 20);
+            dots.setContentDescription("CampusTrade Helper is typing");
+            bubble.addView(dots);
+            line.addView(bubble, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            container.addView(line, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             shown++;
         }
         if (shown == 0) {

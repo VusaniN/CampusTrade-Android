@@ -83,10 +83,40 @@ public final class CloudSync {
                 .getString("em:" + email.toLowerCase(java.util.Locale.ROOT), "");
     }
 
+    /** Remember the staff account's reserved chat address on this device. */
+    public static void registerAdminAlias(Context ctx, String uid) {
+        if (uid == null || uid.isEmpty()) return;
+        dir(ctx).edit()
+                .putString("u:" + uid, Constants.STRICT_ADMIN_EMAIL)
+                .putString("e:" + Constants.STRICT_ADMIN_EMAIL.toLowerCase(java.util.Locale.ROOT), uid)
+                .putString("e:" + Constants.ADMIN_CHAT_EMAIL, uid)
+                .putString("admin_uid", uid)
+                .apply();
+    }
+
     /** Turn a student email into a Firebase ID. */
     public static void emailToUid(Context ctx, String email, StrCallback cb) {
         if (email == null || email.isEmpty()) {
             cb.onBad("Unknown student");
+            return;
+        }
+        // The reserved admin chat address follows the staff account, even
+        // though no Firebase user is registered with that address.
+        if (Constants.ADMIN_CHAT_EMAIL.equalsIgnoreCase(email.trim())) {
+            String known = dir(ctx).getString("admin_uid", "");
+            if (!known.isEmpty()) {
+                cb.onOk(known);
+                return;
+            }
+            emailToUid(ctx, Constants.STRICT_ADMIN_EMAIL, new StrCallback() {
+                @Override public void onOk(String uid) {
+                    registerAdminAlias(ctx, uid);
+                    cb.onOk(uid);
+                }
+                @Override public void onBad(String message) {
+                    cb.onBad("The campus admin chat is offline right now. Try email instead.");
+                }
+            });
             return;
         }
         String cached = dir(ctx).getString("e:" + email.toLowerCase(), "");

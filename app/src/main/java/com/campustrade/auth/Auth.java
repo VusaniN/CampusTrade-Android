@@ -1,5 +1,6 @@
 package com.campustrade.auth;
 
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -309,19 +310,12 @@ public class Auth {
         setMode(false);
     }
 
-    // Sends the reset link and offers a resend option.
+    // Sends the reset link and shows the five-minute resend window.
     private void sendResetEmail(String email) {
         new AuthRepository().resetPassword(email, new AuthRepository.SimpleCallback() {
             @Override public void onOk() {
                 if (host.isDestroyed() || host.isFinishing()) return;
-                host.ui.dialog().setTitle("Reset email requested")
-                        .setMessage("If " + email + " is registered, a reset link is on its way. "
-                                + "Check your inbox and spam folder - the link expires after one hour.\n\n"
-                                + "If it hasn't arrived, wait a few minutes "
-                                + "or request a new link.")
-                        .setPositiveButton("Resend", (d, which) -> sendResetEmail(email))
-                        .setNegativeButton("Close", null)
-                        .show();
+                showLinkCountdown(email, 5 * 60, false);
             }
             @Override public void onBad(String message) {
                 if (host.isDestroyed() || host.isFinishing()) return;
@@ -331,6 +325,188 @@ public class Auth {
                         .show();
             }
         });
+    }
+
+    /** The reset window is five minutes. Resend is always one tap away. */
+    private void showLinkCountdown(final String email, final int seconds, final boolean verification) {
+        final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        final AlertDialog[] holder = new AlertDialog[1];
+        final int[] left = {seconds};
+        final boolean[] stopped = {false};
+        final Runnable[] tickHolder = new Runnable[1];
+        final Runnable tick = new Runnable() {
+            @Override public void run() {
+                if (stopped[0] || holder[0] == null) return;
+                int minutes = Math.max(0, left[0]) / 60;
+                int secs = Math.max(0, left[0]) % 60;
+                String title = verification ? "Verify your email" : "Reset email requested";
+                String body = verification
+                        ? "We sent a verification link to " + email
+                        + ".\n\nThis verification window closes in "
+                        + String.format(java.util.Locale.ROOT, "%d:%02d", minutes, secs)
+                        + ". If it expires, CampusTrade sends another link automatically."
+                        : "If " + email + " is registered, a reset link is on its way. "
+                        + "Check your inbox and spam folder.\n\nThe link window closes in "
+                        + String.format(java.util.Locale.ROOT, "%d:%02d", minutes, secs)
+                        + ". Use Resend whenever you need a fresh one.";
+                holder[0].setTitle(title);
+                holder[0].setMessage(body);
+                if (verification) {
+                    holder[0].getButton(AlertDialog.BUTTON_NEUTRAL).setVisibility(
+                            left[0] > 0 ? android.view.View.VISIBLE : android.view.View.GONE);
+                }
+                if (left[0]-- <= 0) {
+                    if (verification) {
+                        new AuthRepository().resendVerification(new AuthRepository.SimpleCallback() {
+                            @Override public void onOk() {
+                                left[0] = 15 * 60;
+                                stopped[0] = false;
+                                holder[0].setMessage("A fresh verification link was sent to " + email
+                                        + ".\n\nThe new window closes in 15:00.");
+                                handler.postDelayed(tickHolder[0], 1000);
+                            }
+                            @Override public void onBad(String message) {
+                                holder[0].setMessage("The verification window ended and the link "
+                                        + "couldn't be resent automatically.\n\n" + message
+                                        + "\n\nClose this and log in with your password to try again.");
+                            }
+                        });
+                        stopped[0] = true;
+                    } else {
+                        holder[0].setMessage("The five-minute reset window has ended. "
+                                + "Tap Resend for a fresh link, or close this and use Forgot password again.");
+                        stopped[0] = true;
+                    }
+                    return;
+                }
+                handler.postDelayed(this, 1000);
+            }
+        };
+        tickHolder[0] = tick;
+        AlertDialog dialog = host.ui.dialog()
+                .setTitle(verification ? "Verify your email" : "Reset email requested")
+                .setMessage("Preparing your link window...")
+                .setPositiveButton(verification ? "I've verified" : "Close", null)
+                .setNegativeButton(verification ? "Close" : "Resend",
+                        verification ? null : (d, which) -> sendResetEmail(email))
+                .setNeutralButton(verification ? "Resend now" : null,
+                        verification ? (d, which) -> resendVerificationNow(email) : null)
+                .create();
+        holder[0] = dialog;
+        dialog.setOnShowListener(d -> {
+            if (verification) {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v ->
+                        checkVerificationNow(dialog, email));
+            }
+        });
+        dialog.setOnDismissListener(d -> {
+            stopped[0] = true;
+            handler.removeCallbacks(tick);
+        });
+        dialog.show();
+        tick.run();
+    }
+
+    private void resendVerificationNow(final String email) {
+        new AuthRepository().resendVerification(new AuthRepository.SimpleCallback() {
+            @Override public void onOk() {
+                host.ui.showSimpleMessage("Verification sent",
+                        "A fresh verification link is on its way to " + email + ".");
+            }
+            @Override public void onBad(String message) {
+                host.ui.showSimpleMessage("Couldn't resend", message);
+            }
+        });
+    }
+
+    private void checkVerificationNow(AlertDialog dialog, final String email) {
+        new AuthRepository().checkEmailVerified(new AuthRepository.SimpleCallback() {
+            @Override public void onOk() {
+                dialog.dismiss();
+                String uid = new AuthRepository().currentUid();
+                if (uid == null) {
+                    host.ui.showSimpleMessage("Email verified", "Log in with your password to continue.");
+                    return;
+                }
+                host.currentUid = uid;
+                CloudSync.directoryPut(host, uid, email);
+                new AuthRepository().loadUser(uid, new AuthRepository.UserCallback() {
+                    @Override public void onOk(com.campustrade.auth.model.User user) {
+                        if (host.isDestroyed() || host.isFinishing()) return;
+                        String name = user != null && user.getStuName() != null && !user.getStuName().isEmpty()
+                                ? user.getStuName() : email;
+                        CloudSync.saveSession(host, uid, email, name);
+                        completeAuth(email, name);
+                    }
+                    @Override public void onBad(String message) {
+                        host.ui.showSimpleMessage("Email verified", "Log in with your password to continue.");
+                    }
+                });
+            }
+            @Override public void onBad(String message) {
+                host.ui.showSimpleMessage("Not verified yet", message);
+            }
+        });
+    }
+
+    private void showVerificationDialog(String email, String message) {
+        if (host.isDestroyed() || host.isFinishing()) return;
+        host.ui.dialog().setTitle("Verify your email")
+                .setMessage(message)
+                .setPositiveButton("Start verification timer",
+                        (d, which) -> showLinkCountdown(email, 15 * 60, true))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    /** Suspended students can file an appeal before the login is cleared. */
+    private void showSuspensionDialog(final String uid, final String email, String message) {
+        LinearLayout form = new LinearLayout(host);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(host.ui.dp(20), host.ui.dp(8), host.ui.dp(20), 0);
+        TextView copy = host.ui.bodyText(message + "\n\nTell the campus team why your account should be restored.",
+                host.muted, 13);
+        form.addView(copy);
+        final EditText reason = host.ui.input("Appeal reason (at least 20 characters)", InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        reason.setMinLines(4);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = host.ui.dp(12);
+        form.addView(reason, params);
+        AlertDialog dialog = host.ui.dialog()
+                .setTitle("Account suspended")
+                .setView(form)
+                .setPositiveButton("Send appeal", null)
+                .setNegativeButton("Close", (d, which) -> {
+                    new AuthRepository().logout();
+                    host.submitButton.setText("Log in");
+                    validateAuth();
+                })
+                .create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String text = host.ui.text(reason).trim();
+            if (text.length() < 20) {
+                reason.setError("Add a little more detail (20+ characters).");
+                return;
+            }
+            new AuthRepository().submitAppeal(uid, email, host.currentStudentName, text,
+                    new AuthRepository.SimpleCallback() {
+                        @Override public void onOk() {
+                            dialog.dismiss();
+                            new AuthRepository().logout();
+                            host.submitButton.setText("Log in");
+                            validateAuth();
+                            host.ui.showSimpleMessage("Appeal sent",
+                                    "The campus team will review your appeal and contact " + email + ".");
+                        }
+                        @Override public void onBad(String error) {
+                            host.ui.showSimpleMessage("Appeal didn't send",
+                                    error + "\n\nEmail the campus team from another account if this keeps happening.");
+                        }
+                    });
+        }));
+        dialog.show();
     }
 
     // Switch between login and sign-up without rebuilding the screen.
@@ -443,11 +619,11 @@ public class Auth {
                         String accountStatus = user.getAccountStatus();
                         if ("suspended".equalsIgnoreCase(accountStatus) || "deactivated".equalsIgnoreCase(accountStatus)
                                 || "deleted".equalsIgnoreCase(accountStatus)) {
-                            new AuthRepository().logout();
+                            host.authSubmitting = false;
                             host.submitButton.setText("Log in");
                             validateAuth();
-                            host.ui.showSimpleMessage("Account unavailable",
-                                    "This account isn't active right now. Reach out to the campus team from another account.");
+                            showSuspensionDialog(uid, loginEmail,
+                                    "This account isn't active right now. You can send an appeal to the campus team.");
                             return;
                         }
                         new AuthRepository().touchLastActive(uid);
@@ -507,7 +683,7 @@ public class Auth {
                 host.authSubmitting = false;
                 host.submitButton.setText(host.signupMode ? "Create account" : "Log in");
                 validateAuth();
-                host.ui.showSimpleMessage("Verify your email", message);
+                showVerificationDialog(email, message);
             }
             @Override public void onBad(String message) {
                 if (host.isDestroyed() || host.isFinishing()) return;
@@ -528,8 +704,10 @@ public class Auth {
 
     // Save the session and open the right screen.
     public void completeAuth(String email, String fullName) {
-        host.adminAccess = false;
-        host.adminOnlySession = false;
+        boolean strictAdmin = Constants.STRICT_ADMIN_EMAIL.equalsIgnoreCase(email);
+        host.adminAccess = strictAdmin;
+        host.adminOnlySession = strictAdmin;
+        if (strictAdmin) host.adminAccount = true;
         host.currentStudentEmail = email;
         host.currentStudentName = fullName.trim();
         // Keep a local record that this account accepted the current terms
@@ -554,6 +732,7 @@ public class Auth {
                 .putString("student_email", email)
                 .putString("student_name", host.currentStudentName)
                 .putBoolean("signed_in", true).apply();
+        if (strictAdmin) CloudSync.registerAdminAlias(host, host.currentUid);
         // Apply the saved theme before the first screen appears.
         host.applyTheme();
         host.applyWindowTheme();
@@ -562,9 +741,12 @@ public class Auth {
         host.getIntent().removeExtra("open_notifications");
         host.getIntent().removeExtra("open_inbox");
         host.startChatListeners();
-        host.market.syncFavourites();
-        host.safety.sync(host.currentStudentEmail, host.currentUid);
-        Tutorial.showOnboarding(host);
+        if (!strictAdmin) {
+            host.market.syncFavourites();
+            host.safety.sync(host.currentStudentEmail, host.currentUid);
+            host.safety.syncContentSanctions(host.currentStudentEmail, host.currentUid);
+            Tutorial.showOnboarding(host);
+        }
         int unread = host.inbox.unreadMessages();
         if (unread > 0) host.notification.showCampusNotification("New messages", "You have " + unread + " unread message(s).", "messages");
     }

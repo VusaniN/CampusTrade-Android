@@ -157,6 +157,7 @@ public class MainActivity extends Activity {
     String currentStudentName = "Eduvos Student";
     String currentUid = "";
     String currentTab = "Home";
+    String chatReturnTab = "Inbox";
     String selectedCourse = "";
     String selectedYear = "";
     
@@ -171,8 +172,7 @@ public class MainActivity extends Activity {
             "Other"
     };
     static final String[] YEARS = {
-            "1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "6th Year", "7th Year",
-            "Honours", "Postgraduate"
+            "1st Year", "2nd Year", "3rd Year", "Higher Certificate", "Masters", "Honours"
     };
     static final String[] CATEGORIES = {
             "Books", "Technology", "Stationery", "Other"
@@ -236,6 +236,8 @@ public class MainActivity extends Activity {
     LinearLayout openChatContainer;
     ScrollView openChatScroll;
     Dialog openChatDialog;
+    LinearLayout openChatComposer;
+    TextView openChatClosedNotice;
     boolean adminLast24Hours = true;
     boolean showClosedReports = false;
     final ArrayList<ModerationReport> moderationReports = new ArrayList<>();
@@ -313,6 +315,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        applySavedFontScale();
         ui = new MainUI(this);
         applyTheme();
         applyWindowTheme();
@@ -343,19 +346,28 @@ public class MainActivity extends Activity {
         String savedUid = session.getString("uid", "");
         String savedTab = savedInstanceState != null
                 ? savedInstanceState.getString("tab", "Market") : "Market";
-        if (savedTab.equals("Admin") || savedTab.equals("AdminReports") || savedTab.equals("AdminAnalytics")) savedTab = "Profile";
+        boolean strictAdmin = Constants.STRICT_ADMIN_EMAIL.equalsIgnoreCase(savedEmail);
+        if (isAdminTab(savedTab) && !strictAdmin) savedTab = "Profile";
+        if (isAdminTab(savedTab) && strictAdmin) savedTab = "Admin";
         boolean savedSession = session.getBoolean("signed_in", false) && !savedUid.isEmpty();
         // A saved session opens the app, but the lock still asks for the PIN.
         if (savedSession) {
             currentStudentEmail = savedEmail;
             currentUid = savedUid;
             currentStudentName = com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_profiles").getString("full_name:" + savedEmail, "Student");
+            if (strictAdmin) {
+                adminAccount = true;
+                adminAccess = true;
+                adminOnlySession = true;
+            }
             CloudSync.directoryPut(this, currentUid, currentStudentEmail);
+            if (strictAdmin) CloudSync.registerAdminAlias(this, currentUid);
             refreshAdminRole();
             new AuthRepository().touchLastActive(currentUid);
             market.syncFavourites();
             market.cloudMergeMarket();
             safety.sync(currentStudentEmail, currentUid);
+            safety.syncContentSanctions(currentStudentEmail, currentUid);
             needsUnlock = settingsPrefs().getBoolean("app_lock", false); showAppScreen(savedTab);
             startChatListeners();
             community.syncCloudSearchAlerts();
@@ -387,7 +399,8 @@ public class MainActivity extends Activity {
     }
 
     private boolean isAdminTab(String tab) {
-        return tab.equals("Admin") || tab.equals("AdminReports") || tab.equals("AdminAnalytics");
+        return tab.equals("Admin") || tab.equals("AdminReports")
+                || tab.equals("AdminAnalytics") || tab.equals("AdminChat");
     }
 
     // Rebuild the current tab so no old views remain.
@@ -399,12 +412,10 @@ public class MainActivity extends Activity {
             return;
         }
         if (adminOnlySession) {
-            admin.showAdminOnlyScreen(tab.equals("AdminReports") ? "AdminReports"
-                    : tab.equals("AdminAnalytics") ? "AdminAnalytics" : "Admin");
+            admin.showAdminOnlyScreen(isAdminTab(tab) ? tab : "Admin");
             return;
         }
-        if ((tab.equals("Admin") || tab.equals("AdminReports") || tab.equals("AdminAnalytics"))
-                && !admin.canUseAdmin()) {
+        if (isAdminTab(tab) && !admin.canUseAdmin()) {
             Toast.makeText(this, "Admin access is unavailable.", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -444,6 +455,7 @@ public class MainActivity extends Activity {
         else if (tab.equals("Payments")) order.buildPayments(content);
         else if (tab.equals("Admin")) admin.buildAdmin(content);
         else if (tab.equals("AdminReports")) admin.buildAdminReports(content);
+        else if (tab.equals("AdminChat")) admin.buildAdminChats(content);
         else if (tab.equals("AdminAnalytics")) adminAnalytics.build(content);
         else if (tab.equals("SellerDashboard")) sellerDashboard.build(content);
         else if (tab.equals("Groups")) community.buildGroups(content);
@@ -538,6 +550,32 @@ public class MainActivity extends Activity {
         return com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_settings_" + currentStudentEmail);
     }
 
+    float savedFontScale() {
+        float scale = com.campustrade.auth.data.SecurePrefs.get(this, PREFS)
+                .getFloat("font_scale", 1f);
+        return Math.max(0.8f, Math.min(1.4f, scale));
+    }
+
+    private void applySavedFontScale() {
+        applyFontScaleToResources(savedFontScale());
+    }
+
+    private void applyFontScaleToResources(float scale) {
+        android.content.res.Configuration config = new android.content.res.Configuration(
+                getResources().getConfiguration());
+        if (Math.abs(config.fontScale - scale) < 0.01f) return;
+        config.fontScale = scale;
+        getResources().updateConfiguration(config, getResources().getDisplayMetrics());
+    }
+
+    void setFontScale(float scale) {
+        float clean = Math.max(0.8f, Math.min(1.4f, Math.round(scale * 10f) / 10f));
+        com.campustrade.auth.data.SecurePrefs.get(this, PREFS).edit()
+                .putFloat("font_scale", clean).commit();
+        applyFontScaleToResources(clean);
+        recreate();
+    }
+
     boolean isDebugBuild() {
         return (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
@@ -597,8 +635,13 @@ public class MainActivity extends Activity {
             JSONArray records = new JSONArray(com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_reports").getString("records", "[]"));
             for (int i = 0; i < records.length(); i++) {
                 JSONObject r = records.getJSONObject(i);
-                moderationReports.add(new ModerationReport(r.getString("id"), r.getString("product"), r.getString("title"), r.getString("reporter"),
-                        r.getString("name"), r.getString("reason"), r.getString("detail"), r.getString("priority"), r.getString("state"), r.getLong("time")));
+                ModerationReport report = new ModerationReport(r.getString("id"), r.getString("product"), r.getString("title"), r.getString("reporter"),
+                        r.getString("name"), r.getString("reason"), r.getString("detail"), r.getString("priority"), r.getString("state"), r.getLong("time"));
+                report.resolutionNote = r.optString("resolution", "");
+                report.resolvedAt = r.optLong("resolved_at", 0);
+                report.satisfaction = r.optInt("satisfaction", 0);
+                report.satisfactionComment = r.optString("satisfaction_comment", "");
+                moderationReports.add(report);
             }
         } catch (org.json.JSONException e) { Toast.makeText(this, "Some reports couldn't be loaded.", Toast.LENGTH_SHORT).show(); }
     }
@@ -609,7 +652,9 @@ public class MainActivity extends Activity {
         try {
             for (ModerationReport r : moderationReports) records.put(new JSONObject().put("id", r.id).put("product", r.productId).put("title", r.productTitle)
                     .put("reporter", r.reporterEmail).put("name", r.reporterName).put("reason", r.reason).put("detail", r.detail)
-                    .put("priority", r.priority).put("state", r.state).put("time", r.createdAt));
+                    .put("priority", r.priority).put("state", r.state).put("time", r.createdAt)
+                    .put("resolution", r.resolutionNote).put("resolved_at", r.resolvedAt)
+                    .put("satisfaction", r.satisfaction).put("satisfaction_comment", r.satisfactionComment));
         } catch (org.json.JSONException e) { return false; }
         return com.campustrade.auth.data.SecurePrefs.get(this, PREFS + "_reports").edit().putString("records", records.toString()).commit();
     }
@@ -716,6 +761,8 @@ public class MainActivity extends Activity {
         openChatContainer = null;
         openChatScroll = null;
         openChatDialog = null;
+        openChatComposer = null;
+        openChatClosedNotice = null;
     }
 
     // Handle file pickers and the app lock.
@@ -908,7 +955,8 @@ public class MainActivity extends Activity {
                 showAppScreen(paymentsReturnTab);
             } else if (currentTab.equals("Admin")) {
                 admin.exitAdminMode();
-            } else if (currentTab.equals("AdminReports")) {
+            } else if (currentTab.equals("AdminReports") || currentTab.equals("AdminChat")
+                    || currentTab.equals("AdminAnalytics")) {
                 showAppScreen("Admin");
             } else if (currentTab.equals("Groups")) community.createStudyGroup();
             else if (currentTab.equals("Wanted")) community.createWanted();
@@ -925,13 +973,17 @@ public class MainActivity extends Activity {
         ui.attachPressAnimation(button);
         header.addView(button, new LinearLayout.LayoutParams(ui.dp(48), ui.dp(48)));
 
-        View menuButton = new CampusAssetView(this, "menu", text);
-        menuButton.setPadding(ui.dp(10), ui.dp(10), ui.dp(10), ui.dp(10));
-        menuButton.setContentDescription("Open navigation menu");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) menuButton.setTooltipText("Menu");
-        ui.attachPressAnimation(menuButton);
-        menuButton.setOnClickListener(v -> showAppMenu());
-        header.addView(menuButton, new LinearLayout.LayoutParams(ui.dp(48), ui.dp(48)));
+        // Strict admin sessions have no student drawer. Their admin tabs are
+        // the only navigation surface, so normal campus screens can't leak in.
+        if (!adminOnlySession) {
+            View menuButton = new CampusAssetView(this, "menu", text);
+            menuButton.setPadding(ui.dp(10), ui.dp(10), ui.dp(10), ui.dp(10));
+            menuButton.setContentDescription("Open navigation menu");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) menuButton.setTooltipText("Menu");
+            ui.attachPressAnimation(menuButton);
+            menuButton.setOnClickListener(v -> showAppMenu());
+            header.addView(menuButton, new LinearLayout.LayoutParams(ui.dp(48), ui.dp(48)));
+        }
         return header;
     }
 
@@ -950,7 +1002,7 @@ public class MainActivity extends Activity {
         String[] names = {"Home", "Study", "Market", "Inbox", lastTab.equals("Profile") ? "Me" : lastTab};
         for (int i = 0; i < tabs.length; i++) {
             final String tab = tabs[i];
-            boolean active = tab.equals(currentTab) || (tab.equals("Admin") && currentTab.equals("AdminReports"))
+            boolean active = tab.equals(currentTab) || (tab.equals("Admin") && currentTab.startsWith("Admin"))
                     || (tab.equals("Inbox") && currentTab.equals("Groups"))
                     || (tab.equals("Market") && (currentTab.equals("Wanted") || currentTab.equals("Offers") || currentTab.equals("SearchAlerts")));
             int navColor = active ? blue : muted;
@@ -1017,6 +1069,7 @@ public class MainActivity extends Activity {
         if (tab.equals("Payments")) return "Orders";
         if (tab.equals("Admin")) return "Admin";
         if (tab.equals("AdminReports")) return "Moderation";
+        if (tab.equals("AdminChat")) return "Student chat";
         if (tab.equals("AdminAnalytics")) return "Analytics";
         if (tab.equals("SellerDashboard")) return "Sales";
         if (tab.equals("Groups")) return "Groups";
@@ -1035,7 +1088,8 @@ public class MainActivity extends Activity {
         if (tab.equals("Notifications")) return notification.unreadNotifications() + " unread";
         if (tab.equals("Payments")) return "Your purchases and sales";
         if (tab.equals("Admin")) return "Campus operations overview";
-        if (tab.equals("AdminReports")) return "Local campus reports";
+        if (tab.equals("AdminReports")) return "Open and resolved reports";
+        if (tab.equals("AdminChat")) return "Live conversations with students";
         if (tab.equals("AdminAnalytics")) return "Users, listings and transactions";
         if (tab.equals("SellerDashboard")) return "Your listings, sales and performance";
         if (tab.equals("Groups")) return "Course-based campus connections";
@@ -1305,12 +1359,14 @@ public class MainActivity extends Activity {
     // No real back stack, so handle common back cases by hand.
     @Override public void onBackPressed() {
         if (adminOnlySession) {
-            if (currentTab.equals("AdminReports") || currentTab.equals("AdminAnalytics")) { admin.showAdminOnlyScreen("Admin"); return; }
+            if (currentTab.equals("AdminReports") || currentTab.equals("AdminChat")
+                    || currentTab.equals("AdminAnalytics")) { admin.showAdminOnlyScreen("Admin"); return; }
             admin.exitAdminMode();
             return;
         }
         if (com.campustrade.auth.data.SecurePrefs.get(this, PREFS).getBoolean("signed_in", false)) {
             if (admin.canUseAdmin() && currentTab.equals("AdminReports")) { showAppScreen("Admin"); return; }
+            if (admin.canUseAdmin() && currentTab.equals("AdminChat")) { showAppScreen("Admin"); return; }
             if (admin.canUseAdmin() && currentTab.equals("AdminAnalytics")) { showAppScreen("Admin"); return; }
             if (admin.canUseAdmin() && currentTab.equals("Admin")) { admin.exitAdminMode(); return; }
             if (currentTab.equals("SellerDashboard")) { showAppScreen("Profile"); return; }
@@ -1343,7 +1399,12 @@ public class MainActivity extends Activity {
             showAppScreen(currentTab);
         } else if ((currentTab.equals("Settings") || currentTab.equals("Notifications")) && !unlocking) showAppScreen(currentTab);
         if (!unlocking) needsUnlock = false;
-        if (signedIn && !unlocking) refreshAdminRole();
+        if (signedIn && !unlocking) {
+            refreshAdminRole();
+            if (!currentUid.isEmpty() && !adminOnlySession) {
+                safety.syncContentSanctions(currentStudentEmail, currentUid);
+            }
+        }
     }
 
     private class LogoView extends View {
@@ -1731,6 +1792,10 @@ public class MainActivity extends Activity {
         final String priority;
         final long createdAt;
         String state;
+        String resolutionNote = "";
+        long resolvedAt = 0;
+        int satisfaction = 0;
+        String satisfactionComment = "";
 
         ModerationReport(String id, String productId, String productTitle, String reporterEmail, String reporterName,
                 String reason, String detail, String priority, String state, long createdAt) {
@@ -1762,8 +1827,13 @@ public class MainActivity extends Activity {
             return entityType().equals("user") && productId.length() > 5 ? productId.substring(5) : "";
         }
         boolean close(boolean authorized, boolean dismiss) {
+            return close(authorized, dismiss, "", 0);
+        }
+        boolean close(boolean authorized, boolean dismiss, String note, long when) {
             if (!authorized || !isOpen()) return false;
             state = dismiss ? "Dismissed" : "Resolved";
+            resolutionNote = note == null ? "" : note.trim();
+            resolvedAt = when > 0 ? when : System.currentTimeMillis();
             return true;
         }
         static int priorityRank(String priority) { return priority.equals("High") ? 3 : priority.equals("Medium") ? 2 : 1; }
@@ -1862,6 +1932,7 @@ public class MainActivity extends Activity {
         String status;
         boolean hidden = false;
         boolean negotiable = true;
+        int quantity = 1;
         int viewCount = 0;
         int favouriteCount = 0;
         long updatedTime = System.currentTimeMillis();

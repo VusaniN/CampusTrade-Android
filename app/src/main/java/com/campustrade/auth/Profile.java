@@ -102,6 +102,9 @@ public class Profile {
                 v -> host.showAppScreen("SellerDashboard")));
         content.addView(marketplace);
         LinearLayout appearance = host.ui.card(Color.WHITE, 16, 0);
+        appearance.addView(settingsOption("type", "Text size", "Make app text easier to read",
+                Math.round(host.savedFontScale() * 100) + "%", v -> showTextSizeControls()));
+        host.ui.addMenuDivider(appearance);
         appearance.addView(settingsOption("moon", "Dark mode", "Dark screens in the evening",
                 host.themeModeLabel(), v -> host.showThemePicker()));
         content.addView(appearance);
@@ -121,6 +124,17 @@ public class Profile {
         LinearLayout support = host.ui.card(Color.WHITE, 16, 0);
         support.addView(settingsOption("checklist", "App tutorial", "A quick tour for new and returning users", "Open", v -> Tutorial.show(host)));
         host.ui.addMenuDivider(support);
+        support.addView(settingsOption("flag", "My reports", "Track reports, admin replies and rate the outcome", "Open", v -> showMyReports()));
+        host.ui.addMenuDivider(support);
+        support.addView(settingsOption("shield", "Content warnings",
+                host.safety.postingBlocked(host.currentStudentEmail)
+                        ? "Posting is paused - request a review" : "Warnings before posting is paused",
+                host.safety.contentStrikes(host.currentStudentEmail) + "/3", v -> showContentStanding()));
+        host.ui.addMenuDivider(support);
+        support.addView(settingsOption("chat", "Live chat with admin", "Talk to the campus moderator about a report", "Open", v -> host.inbox.openAdminChat()));
+        host.ui.addMenuDivider(support);
+        support.addView(settingsOption("mail", "Email campus admin", "Use your mail app for a formal report", "Compose", v -> emailCampusAdmin()));
+        host.ui.addMenuDivider(support);
         support.addView(settingsOption("chat", "Help & support", "Ask the helper or message the campus team", "Open", v -> showHelpSupport()));
         content.addView(support);
 
@@ -128,7 +142,7 @@ public class Profile {
         LinearLayout accountActions = host.ui.card(Color.WHITE, 16, 0);
         accountActions.addView(settingsOption("profile", "Profile photo", "Change your profile picture", "Open", v -> pickProfilePhoto()));
         host.ui.addMenuDivider(accountActions);
-        accountActions.addView(settingsOption("shield", "Change password", "Send a password reset link", "Open", v -> changePassword()));
+        accountActions.addView(settingsOption("shield", "Change password", "Current password, new password and confirmation", "Open", v -> changePassword()));
         host.ui.addMenuDivider(accountActions);
         accountActions.addView(settingsOption("exit", "Deactivate account", "Temporarily disable sign-in", "Open", v -> confirmDeactivate()));
         host.ui.addMenuDivider(accountActions);
@@ -259,6 +273,387 @@ public class Profile {
         int start = prefs.getInt("quiet_start", 1320);
         int end = prefs.getInt("quiet_end", 420);
         return start != end && (start < end ? minute >= start && minute < end : minute >= start || minute < end);
+    }
+
+    private void showTextSizeControls() {
+        final float[] scale = {host.savedFontScale()};
+        LinearLayout body = new LinearLayout(host);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, host.ui.dp(4), 0, 0);
+        body.addView(host.ui.bodyText("Adjust text across CampusTrade. The setting stays on this device.",
+                host.muted, 11));
+        LinearLayout row = host.ui.horizontal();
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, host.ui.dp(14), 0, host.ui.dp(8));
+        TextView smaller = host.ui.secondaryButton("A smaller");
+        TextView value = host.ui.titleText("", host.text, 18);
+        value.setGravity(Gravity.CENTER);
+        TextView larger = host.ui.secondaryButton("A larger");
+        row.addView(smaller, new LinearLayout.LayoutParams(0, host.ui.dp(48), 1));
+        row.addView(value, new LinearLayout.LayoutParams(0, host.ui.dp(48), 1));
+        row.addView(larger, new LinearLayout.LayoutParams(0, host.ui.dp(48), 1));
+        body.addView(row);
+        TextView preview = host.ui.bodyText("Preview: CampusTrade marketplace, messages and orders.",
+                host.text, 14);
+        preview.setPadding(host.ui.dp(12), host.ui.dp(12), host.ui.dp(12), host.ui.dp(12));
+        preview.setBackground(host.ui.strokedRound(host.surface(), 10, host.line));
+        body.addView(preview);
+        Button apply = host.ui.primaryButton("Apply text size");
+        LinearLayout.LayoutParams applyParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+        applyParams.topMargin = host.ui.dp(12);
+        body.addView(apply, applyParams);
+        TextView reset = host.ui.textButton("Reset to default");
+        body.addView(reset, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(42)));
+        Dialog sheet = host.ui.showBottomSheet("Text size", body);
+        final Runnable[] refresh = new Runnable[1];
+        refresh[0] = () -> {
+            value.setText(Math.round(scale[0] * 100) + "%");
+            preview.setTextSize(14f * scale[0] / host.savedFontScale());
+            smaller.setAlpha(scale[0] <= 0.8f ? 0.4f : 1f);
+            larger.setAlpha(scale[0] >= 1.4f ? 0.4f : 1f);
+        };
+        refresh[0].run();
+        smaller.setOnClickListener(v -> {
+            if (scale[0] <= 0.8f) return;
+            scale[0] = Math.max(0.8f, scale[0] - 0.1f);
+            refresh[0].run();
+        });
+        larger.setOnClickListener(v -> {
+            if (scale[0] >= 1.4f) return;
+            scale[0] = Math.min(1.4f, scale[0] + 0.1f);
+            refresh[0].run();
+        });
+        reset.setOnClickListener(v -> {
+            scale[0] = 1f;
+            refresh[0].run();
+        });
+        apply.setOnClickListener(v -> {
+            sheet.dismiss();
+            host.setFontScale(scale[0]);
+        });
+    }
+
+    private void emailCampusAdmin() {
+        Intent mail = new Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:" + Constants.STRICT_ADMIN_EMAIL));
+        mail.putExtra(Intent.EXTRA_SUBJECT, "CampusTrade report follow-up");
+        mail.putExtra(Intent.EXTRA_TEXT, "Hello campus team,\n\nI'm following up on a CampusTrade report.\n\nStudent: "
+                + host.currentStudentEmail + "\n\n");
+        try {
+            host.startActivity(Intent.createChooser(mail, "Email campus admin"));
+        } catch (android.content.ActivityNotFoundException e) {
+            host.ui.showSimpleMessage("Campus admin email", Constants.STRICT_ADMIN_EMAIL);
+        }
+    }
+
+    private void showContentStanding() {
+        int strikes = host.safety.contentStrikes(host.currentStudentEmail);
+        String reason = host.safety.contentLastReason(host.currentStudentEmail);
+        LinearLayout body = new LinearLayout(host);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, host.ui.dp(4), 0, 0);
+        body.addView(host.ui.titleText("Content warnings", host.text, 17));
+        body.addView(host.ui.bodyText(strikes + " of 3 warnings used. "
+                + (host.safety.postingBlocked(host.currentStudentEmail)
+                ? "Posting is paused until a moderator reviews the account."
+                : "Reach 3 warnings and posting is paused for moderator review."), host.muted, 12));
+        if (!reason.isEmpty()) {
+            TextView last = host.ui.bodyText("Latest issue: " + reason, host.text, 12);
+            last.setPadding(host.ui.dp(10), host.ui.dp(10), host.ui.dp(10), host.ui.dp(10));
+            last.setBackground(host.ui.strokedRound(host.surface(), 10, host.line));
+            LinearLayout.LayoutParams lastParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lastParams.topMargin = host.ui.dp(10);
+            body.addView(last, lastParams);
+        }
+        Button appeal = host.ui.primaryButton(strikes > 0 ? "Request a review" : "No warnings to appeal");
+        appeal.setEnabled(strikes > 0);
+        LinearLayout.LayoutParams appealParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+        appealParams.topMargin = host.ui.dp(12);
+        body.addView(appeal, appealParams);
+        Dialog sheet = host.ui.showBottomSheet("Content warnings", body);
+        appeal.setOnClickListener(v -> {
+            sheet.dismiss();
+            LinearLayout reviewForm = new LinearLayout(host);
+            reviewForm.setOrientation(LinearLayout.VERTICAL);
+            reviewForm.setPadding(0, host.ui.dp(4), 0, 0);
+            reviewForm.addView(host.ui.bodyText("Explain why the warning or posting pause should be reviewed.",
+                    host.muted, 11));
+            EditText why = host.ui.input("Why should this be reviewed?", InputType.TYPE_CLASS_TEXT
+                    | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+            why.setMinLines(3);
+            why.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(700)});
+            reviewForm.addView(why);
+            Button send = host.ui.primaryButton("Send appeal");
+            LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+            sendParams.topMargin = host.ui.dp(10);
+            reviewForm.addView(send, sendParams);
+            Dialog form = host.ui.showBottomSheet("Request a review", reviewForm);
+            send.setOnClickListener(v2 -> {
+                String text = host.ui.text(why).trim();
+                if (text.length() < 20) {
+                    why.setError("Add at least 20 characters");
+                    return;
+                }
+                String uid = host.currentUid == null ? "" : host.currentUid;
+                new AuthRepository().submitAppeal(uid, host.currentStudentEmail, host.currentStudentName,
+                        "CONTENT WARNING APPEAL: " + text, new AuthRepository.SimpleCallback() {
+                            @Override public void onOk() {
+                                form.dismiss();
+                                Toast.makeText(host, "Appeal sent to the campus team.", Toast.LENGTH_SHORT).show();
+                            }
+                            @Override public void onBad(String error) {
+                                why.setError(error);
+                            }
+                        });
+            });
+        });
+    }
+
+    /** A student-facing history with the admin reason and a satisfaction rating. */
+    public void showMyReports() {
+        Dialog page = host.ui.fullScreenForm();
+        LinearLayout root = new LinearLayout(host);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(host.page);
+        root.addView(host.ui.pageHeader("My reports", "Replies, outcomes and feedback", page::dismiss));
+        ScrollView scroll = new ScrollView(host);
+        LinearLayout list = new LinearLayout(host);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(host.ui.dp(20), host.ui.dp(4), host.ui.dp(20), host.ui.dp(20));
+        scroll.addView(list);
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        page.setContentView(root);
+        page.show();
+        Window window = page.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(host.page));
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
+
+        final ArrayList<MainActivity.ModerationReport> reports = new ArrayList<>();
+        for (MainActivity.ModerationReport report : host.moderationReports) {
+            if (host.currentStudentEmail.equalsIgnoreCase(report.reporterEmail)) reports.add(report);
+        }
+        final Runnable[] render = new Runnable[1];
+        render[0] = () -> {
+            list.removeAllViews();
+            java.util.Collections.sort(reports, (a, b) -> Long.compare(b.createdAt, a.createdAt));
+            if (reports.isEmpty()) {
+                list.addView(host.ui.emptyState("flag", "No reports yet",
+                        "Reports you submit from a listing, review or student profile appear here."));
+                return;
+            }
+            for (MainActivity.ModerationReport report : reports) {
+                LinearLayout card = host.ui.card(host.surface(), 14, host.ui.dp(14));
+                card.setBackground(host.ui.strokedRound(host.surface(), 14, host.line));
+                LinearLayout top = host.ui.horizontal();
+                top.setGravity(Gravity.CENTER_VERTICAL);
+                TextView reason = host.ui.titleText(report.reason, host.text, 14);
+                reason.setSingleLine(true);
+                reason.setEllipsize(TextUtils.TruncateAt.END);
+                top.addView(reason, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                top.addView(host.ui.statusPill(report.state));
+                card.addView(top);
+                TextView target = host.ui.bodyText(report.entityLabel() + " - " + report.productTitle
+                        + "\nSent " + host.notification.alertTime(report.createdAt), host.muted, 11);
+                target.setPadding(0, host.ui.dp(6), 0, 0);
+                card.addView(target);
+                if (!report.resolutionNote.isEmpty()) {
+                    TextView outcome = host.ui.bodyText("Admin reason: " + report.resolutionNote, host.text, 12);
+                    outcome.setPadding(host.ui.dp(10), host.ui.dp(9), host.ui.dp(10), host.ui.dp(9));
+                    outcome.setBackground(host.ui.strokedRound(
+                            host.nightActive ? Color.rgb(42, 42, 46) : Color.rgb(247, 246, 242), 10, host.line));
+                    LinearLayout.LayoutParams outcomeParams = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    outcomeParams.topMargin = host.ui.dp(9);
+                    card.addView(outcome, outcomeParams);
+                }
+                LinearLayout actions = host.ui.horizontal();
+                actions.setGravity(Gravity.CENTER_VERTICAL);
+                actions.setPadding(0, host.ui.dp(8), 0, 0);
+                if (report.isOpen()) {
+                    TextView chat = host.ui.linkText("Live chat");
+                    chat.setTextSize(11);
+                    chat.setPadding(host.ui.dp(4), host.ui.dp(8), host.ui.dp(10), host.ui.dp(8));
+                    chat.setOnClickListener(v -> {
+                        page.dismiss();
+                        host.inbox.openAdminChat();
+                    });
+                    actions.addView(chat);
+                }
+                TextView email = host.ui.linkText("Email admin");
+                email.setTextSize(11);
+                email.setPadding(host.ui.dp(4), host.ui.dp(8), host.ui.dp(10), host.ui.dp(8));
+                email.setOnClickListener(v -> {
+                    Intent mail = new Intent(Intent.ACTION_SENDTO,
+                            Uri.parse("mailto:" + Constants.STRICT_ADMIN_EMAIL));
+                    mail.putExtra(Intent.EXTRA_SUBJECT, "CampusTrade report: " + report.productTitle);
+                    mail.putExtra(Intent.EXTRA_TEXT, "Report reason: " + report.reason
+                            + "\nReport ID: " + report.id
+                            + "\n\nHello campus team,\n");
+                    try {
+                        host.startActivity(Intent.createChooser(mail, "Email campus admin"));
+                    } catch (android.content.ActivityNotFoundException e) {
+                        host.ui.showSimpleMessage("Campus admin email", Constants.STRICT_ADMIN_EMAIL);
+                    }
+                });
+                actions.addView(email);
+                actions.addView(host.ui.space(1, 1), new LinearLayout.LayoutParams(0, 1, 1));
+                if (report.satisfaction > 0) {
+                    TextView thanks = host.ui.bodyText("You rated " + report.satisfaction + "/5", host.green, 11);
+                    actions.addView(thanks);
+                } else if (!report.isOpen()) {
+                    TextView rate = host.ui.linkText("Rate outcome");
+                    rate.setTextSize(11);
+                    rate.setPadding(host.ui.dp(4), host.ui.dp(8), host.ui.dp(4), host.ui.dp(8));
+                    rate.setOnClickListener(v -> promptSatisfaction(page, report, reports, render[0]));
+                    actions.addView(rate);
+                }
+                card.addView(actions);
+                LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                cardParams.bottomMargin = host.ui.dp(10);
+                list.addView(card, cardParams);
+            }
+        };
+        render[0].run();
+        if (host.currentUid == null || host.currentUid.isEmpty()) return;
+        com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("reports")
+                .whereEqualTo("reporterId", host.currentUid).limit(50).get()
+                .addOnSuccessListener(snap -> {
+                    if (host.isDestroyed() || host.isFinishing()) return;
+                    for (com.google.firebase.firestore.DocumentSnapshot doc : snap.getDocuments()) {
+                        MainActivity.ModerationReport cloud = reportFromDoc(doc);
+                        boolean replaced = false;
+                        for (int i = 0; i < reports.size(); i++) {
+                            if (reports.get(i).id.equals(cloud.id)) {
+                                reports.set(i, cloud);
+                                replaced = true;
+                                break;
+                            }
+                        }
+                        if (!replaced) reports.add(cloud);
+                        for (int i = 0; i < host.moderationReports.size(); i++) {
+                            if (host.moderationReports.get(i).id.equals(cloud.id)) {
+                                host.moderationReports.set(i, cloud);
+                                break;
+                            }
+                        }
+                    }
+                    host.saveModerationReports();
+                    render[0].run();
+                });
+    }
+
+    private MainActivity.ModerationReport reportFromDoc(com.google.firebase.firestore.DocumentSnapshot doc) {
+        String productId = doc.getString("productId");
+        String productTitle = doc.getString("productTitle");
+        String reporterEmail = doc.getString("reporterEmail");
+        String reporterName = doc.getString("reporterName");
+        String reason = doc.getString("reason");
+        String detail = doc.getString("detail");
+        String priority = doc.getString("priority");
+        String state = doc.getString("state");
+        long createdAt = 0;
+        Object created = doc.get("createdAt");
+        if (created instanceof com.google.firebase.Timestamp) {
+            createdAt = ((com.google.firebase.Timestamp) created).toDate().getTime();
+        } else if (created instanceof Number) {
+            createdAt = ((Number) created).longValue();
+        }
+        MainActivity.ModerationReport report = new MainActivity.ModerationReport(doc.getId(),
+                productId == null ? "" : productId,
+                productTitle == null ? "Listing" : productTitle,
+                reporterEmail == null ? host.currentStudentEmail : reporterEmail,
+                reporterName == null ? host.currentStudentName : reporterName,
+                reason == null ? "Report" : reason,
+                detail == null ? "" : detail,
+                priority == null ? "Medium" : priority,
+                state == null ? "Open" : state,
+                createdAt);
+        String note = doc.getString("resolutionNote");
+        if (note != null) report.resolutionNote = note;
+        Object resolved = doc.get("resolvedAt");
+        if (resolved instanceof com.google.firebase.Timestamp) {
+            report.resolvedAt = ((com.google.firebase.Timestamp) resolved).toDate().getTime();
+        } else if (resolved instanceof Number) {
+            report.resolvedAt = ((Number) resolved).longValue();
+        }
+        Long satisfaction = doc.getLong("satisfaction");
+        if (satisfaction != null) report.satisfaction = satisfaction.intValue();
+        String comment = doc.getString("satisfactionComment");
+        if (comment != null) report.satisfactionComment = comment;
+        return report;
+    }
+
+    private void promptSatisfaction(Dialog page, MainActivity.ModerationReport report,
+                                    ArrayList<MainActivity.ModerationReport> reports, Runnable render) {
+        LinearLayout body = new LinearLayout(host);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, host.ui.dp(4), 0, 0);
+        body.addView(host.ui.titleText("How did we handle it?", host.text, 16));
+        body.addView(host.ui.bodyText(report.productTitle + " - " + report.reason, host.muted, 11));
+        final int[] score = {0};
+        final TextView[] choices = new TextView[5];
+        LinearLayout stars = host.ui.horizontal();
+        stars.setPadding(0, host.ui.dp(12), 0, host.ui.dp(4));
+        for (int i = 1; i <= 5; i++) {
+            final int value = i;
+            TextView choice = host.ui.chip(String.valueOf(i), host.nightActive
+                            ? Color.rgb(48, 48, 52) : Color.rgb(242, 240, 235), host.muted);
+            choice.setTextSize(13);
+            choice.setOnClickListener(v -> {
+                score[0] = value;
+                for (int j = 0; j < choices.length; j++) {
+                    boolean selected = j + 1 == value;
+                    choices[j].setTextColor(selected ? Color.WHITE : host.muted);
+                    choices[j].setBackground(host.ui.round(selected ? host.blue
+                            : host.nightActive ? Color.rgb(48, 48, 52) : Color.rgb(242, 240, 235), 999));
+                }
+            });
+            choices[i - 1] = choice;
+            LinearLayout.LayoutParams choiceParams = new LinearLayout.LayoutParams(0, host.ui.dp(44), 1);
+            if (i > 1) choiceParams.leftMargin = host.ui.dp(6);
+            stars.addView(choice, choiceParams);
+        }
+        body.addView(stars);
+        body.addView(host.ui.bodyText("1 = very poor, 5 = excellent", host.muted, 10));
+        EditText comment = host.ui.listingField(body, "Comment (optional)", "Anything else we should know?",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        comment.setSingleLine(false);
+        comment.setMinLines(2);
+        comment.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(500)});
+        Button submit = host.ui.primaryButton("Send feedback");
+        LinearLayout.LayoutParams submitParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(46));
+        submitParams.topMargin = host.ui.dp(10);
+        body.addView(submit, submitParams);
+        Dialog sheet = host.ui.showBottomSheet("Rate the outcome", body);
+        submit.setOnClickListener(v -> {
+            if (score[0] == 0) {
+                Toast.makeText(host, "Choose a rating from 1 to 5.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            report.satisfaction = score[0];
+            report.satisfactionComment = host.ui.text(comment).trim();
+            host.saveModerationReports();
+            java.util.Map<String, Object> fields = new java.util.HashMap<>();
+            fields.put("satisfaction", report.satisfaction);
+            fields.put("satisfactionComment", report.satisfactionComment);
+            fields.put("satisfactionAt", com.google.firebase.Timestamp.now());
+            fields.put("satisfactionBy", host.currentStudentEmail);
+            com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("reports")
+                    .document(report.id).update(fields)
+                    .addOnFailureListener(e -> Toast.makeText(host,
+                            "Rating saved on this phone; the cloud copy didn't update.",
+                            Toast.LENGTH_SHORT).show());
+            sheet.dismiss();
+            render.run();
+            Toast.makeText(host, "Thanks for the feedback.", Toast.LENGTH_SHORT).show();
+        });
     }
 
     // Help is a full page: helper and common questions first, then feedback.
@@ -562,13 +957,35 @@ public class Profile {
     }
 
     private void changePassword() {
-        new AuthRepository().resetPassword(host.currentStudentEmail, new AuthRepository.SimpleCallback() {
-            @Override public void onOk() {
-                host.ui.showSimpleMessage("Check your inbox", "We sent a reset link to " + host.currentStudentEmail + ". Check inbox and spam.");
+        LinearLayout form = host.ui.workflowForm();
+        EditText oldPassword = host.ui.listingField(form, "Current password",
+                "Enter the password you use now",
+                android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        EditText newPassword = host.ui.listingField(form, "New password",
+                "10+ characters, with upper, lower, number and symbol",
+                android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        EditText confirmPassword = host.ui.listingField(form, "Confirm new password",
+                "Type the new password again",
+                android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        host.ui.workflowDialog("Change password", form, "Update password", () -> {
+            String oldValue = host.ui.text(oldPassword);
+            String newValue = host.ui.text(newPassword);
+            String confirmValue = host.ui.text(confirmPassword);
+            if (oldValue.isEmpty()) throw new RuntimeException("Enter your current password.");
+            if (!host.ui.isStrongPassword(newValue)) {
+                throw new RuntimeException("Use 10+ characters with uppercase, lowercase, a number and a symbol.");
             }
-            @Override public void onBad(String message) {
-                host.ui.showSimpleMessage("Password reset", message);
-            }
+            if (!newValue.equals(confirmValue)) throw new RuntimeException("The new passwords don't match.");
+            if (newValue.equals(oldValue)) throw new RuntimeException("Choose a password you haven't used here.");
+            new AuthRepository().changePassword(oldValue, newValue, new AuthRepository.SimpleCallback() {
+                @Override public void onOk() {
+                    host.ui.showSimpleMessage("Password updated",
+                            "Your CampusTrade password was changed on this account.");
+                }
+                @Override public void onBad(String message) {
+                    host.ui.showSimpleMessage("Password didn't change", message);
+                }
+            });
         });
     }
 

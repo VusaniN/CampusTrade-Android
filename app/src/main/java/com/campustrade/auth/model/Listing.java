@@ -26,6 +26,7 @@ public class Listing {
     private String documentMime = "";
     private long documentSize = 0;
     private boolean negotiable = true;
+    private long quantity = 1;
     private long viewCount = 0;
     private long favouriteCount = 0;
     private Timestamp updatedAt = null;
@@ -178,6 +179,14 @@ public class Listing {
 
     public void setNegotiable(boolean negotiable) {
         this.negotiable = negotiable;
+    }
+
+    public long getQuantity() {
+        return quantity;
+    }
+
+    public void setQuantity(long quantity) {
+        this.quantity = quantity;
     }
 
     public long getViewCount() {
