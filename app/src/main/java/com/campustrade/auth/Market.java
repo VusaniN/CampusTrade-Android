@@ -3305,48 +3305,55 @@ public class Market {
         price.setPadding(0, host.ui.dp(8), 0, 0);
         content.addView(price);
 
-        LinearLayout chips = host.ui.horizontal();
-        chips.setPadding(0, host.ui.dp(8), 0, host.ui.dp(10));
+        LinearLayout chipArea = new LinearLayout(host);
+        chipArea.setOrientation(LinearLayout.VERTICAL);
+        chipArea.setPadding(0, host.ui.dp(8), 0, host.ui.dp(10));
         String state = marketState(product);
         CampusFeatures.Offer reservation = host.featureStore.data.reservation(product.id, System.currentTimeMillis());
-        chips.addView(host.ui.statusPill(state));
-        chips.addView(host.ui.space(host.ui.dp(6), 1));
         int detailChipBg = host.nightActive ? Color.rgb(48, 48, 52) : Color.rgb(242, 240, 235);
-        if (reservation != null && (reservation.buyer.equals(host.currentStudentEmail)
-                || reservation.seller.equals(host.currentStudentEmail))) {
-            chips.addView(host.ui.space(host.ui.dp(6), 1));
-            TextView agreedChip = host.ui.chip("Agreed R" + reservation.amount, detailChipBg, host.blue);
-            agreedChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
-            chips.addView(agreedChip);
-        }
+        LinearLayout chips = host.ui.horizontal();
+        addDetailChip(chips, host.ui.statusPill(state));
         TextView conditionChip = host.ui.chip(product.condition, detailChipBg, host.text);
         conditionChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
-        chips.addView(conditionChip);
+        addDetailChip(chips, conditionChip);
         TextView stockChip = host.ui.chip(product.quantity <= 0 ? "Sold out"
                         : product.quantity + " available", product.quantity <= 0
                         ? (host.nightActive ? Color.rgb(60, 36, 36) : Color.rgb(255, 236, 236)) : detailChipBg,
                 product.quantity <= 0 ? (host.nightActive ? Color.rgb(255, 150, 150) : Color.rgb(180, 30, 30)) : host.text);
         stockChip.setBackground(host.ui.strokedRound(product.quantity <= 0
                 ? (host.nightActive ? Color.rgb(60, 36, 36) : Color.rgb(255, 236, 236)) : detailChipBg, 999, host.line));
-        LinearLayout.LayoutParams stockParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stockParams.leftMargin = host.ui.dp(6);
-        chips.addView(stockChip, stockParams);
+        addDetailChip(chips, stockChip);
+        chipArea.addView(chips);
+
+        LinearLayout moreChips = host.ui.horizontal();
+        if (reservation != null && (reservation.buyer.equals(host.currentStudentEmail)
+                || reservation.seller.equals(host.currentStudentEmail))) {
+            TextView agreedChip = host.ui.chip("Agreed R" + reservation.amount, detailChipBg, host.blue);
+            agreedChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
+            addDetailChip(moreChips, agreedChip);
+        }
         if (product.negotiable) {
-            chips.addView(host.ui.space(host.ui.dp(6), 1));
             TextView negotiableChip = host.ui.chip("Negotiable", detailChipBg, host.text);
             negotiableChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
-            chips.addView(negotiableChip);
+            addDetailChip(moreChips, negotiableChip);
         }
         if (fulfilmentLabel(product).equals("Delivery only")) {
-            chips.addView(host.ui.space(host.ui.dp(6), 1));
             TextView deliveryChip = host.ui.chip("Delivery only", detailChipBg, host.text);
             deliveryChip.setBackground(host.ui.strokedRound(detailChipBg, 999, host.line));
-            chips.addView(deliveryChip);
+            addDetailChip(moreChips, deliveryChip);
         }
-        content.addView(chips);
+        if (moreChips.getChildCount() > 0) chipArea.addView(moreChips);
+        content.addView(chipArea);
 
-        content.addView(host.ui.bodyText(product.description, host.text, 14));
+        TextView descriptionTitle = host.ui.titleText("Description", host.text, 14);
+        descriptionTitle.setPadding(0, host.ui.dp(14), 0, host.ui.dp(4));
+        content.addView(descriptionTitle);
+        String descriptionText = product.description == null || product.description.trim().isEmpty()
+                ? "No description provided." : product.description;
+        TextView description = host.ui.bodyText(descriptionText, host.text, 14);
+        description.setLineSpacing(host.ui.dp(2), 1f);
+        content.addView(description, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         if (product.specs != null && !product.specs.trim().isEmpty()) {
             TextView specsTitle = host.ui.titleText("Tech specs", host.text, 14);
             specsTitle.setPadding(0, host.ui.dp(14), 0, host.ui.dp(4));
@@ -3522,6 +3529,11 @@ public class Market {
             window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
             window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(host.page));
         }
+    }
+
+    private void addDetailChip(LinearLayout row, TextView chip) {
+        if (row.getChildCount() > 0) row.addView(host.ui.space(host.ui.dp(6), 1));
+        row.addView(chip);
     }
 
     void showProductDetailsLegacy(MainActivity.Product product) {
