@@ -60,6 +60,9 @@ CampusTrade is a student marketplace and campus companion built with Java and Fi
 - Live moderator chat with students from the admin chat section
 - Admin chats close when the linked report is resolved or after one hour of inactivity
 - Moderators can reopen an expired thread for an active report; students can email admin instead
+- Order conversations open from order details under the Marketplace filter
+- Order chats end automatically when the sale is completed
+- A direct message entered from Inbox shows in recent conversations under All
 - Purchase requests, seller approval, reservations and cancellation requests
 - Cross-device negotiated offers with accept, counteroffer, decline and 24-hour reservations
 - Cross-device pickup scheduling with a public meeting point and both-student confirmation

@@ -233,6 +233,7 @@ public class Inbox {
     public String conversationPreview(String body) {
         if (body == null) return "";
         String cleaned = body.replace("[Admin]", "").replace("[Chat closed]", "")
+                .replace("[Chat reopened]", "")
                 .replaceAll("\\bCT-[A-Z0-9]{8}\\b", "")
                 .replaceAll("\\s{2,}", " ")
                 .replaceAll("^[\\s\\-–—:]+|[\\s\\-–—:]+$", "")
@@ -247,7 +248,27 @@ public class Inbox {
 
     // Save the marketplace flag so the filter survives a restart.
     public boolean isMarketplaceChat(String peer) {
-        return com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages").getBoolean("market:" + marketplaceChatKey(peer), false);
+        if (peer == null || peer.isEmpty()) return false;
+        if (com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages")
+                .getBoolean("market:" + marketplaceChatKey(peer), false)) return true;
+        // Order conversations belong to Marketplace on both devices, even if
+        // the local flag was never stored on this phone.
+        String peerEmail = peer.contains("@") ? peer : CloudSync.emailForUid(host, peer);
+        if (peerEmail == null || peerEmail.isEmpty()) return false;
+        for (MainActivity.TransactionRecord order : host.transactions) {
+            boolean buyerMatch = order.buyerEmail.equalsIgnoreCase(host.currentStudentEmail)
+                    && order.sellerEmail.equalsIgnoreCase(peerEmail);
+            boolean sellerMatch = order.sellerEmail.equalsIgnoreCase(host.currentStudentEmail)
+                    && order.buyerEmail.equalsIgnoreCase(peerEmail);
+            if (buyerMatch || sellerMatch) return true;
+        }
+        return false;
+    }
+
+    public void markMarketplaceChat(String peer) {
+        if (peer == null || peer.isEmpty()) return;
+        com.campustrade.auth.data.SecurePrefs.get(host, host.PREFS + "_messages")
+                .edit().putBoolean("market:" + marketplaceChatKey(peer), true).apply();
     }
 
     /** Admin replies use a reserved peer id and must always show as "Admin". */
@@ -299,10 +320,107 @@ public class Inbox {
         if (latest == null) return "";
         String reason = closureReason(latest.body);
         if (!reason.isEmpty()) return reason;
-        if (System.currentTimeMillis() - latest.time > ADMIN_CHAT_IDLE_MS) {
+        if (isAdminConversation(peer)
+                && System.currentTimeMillis() - latest.time > ADMIN_CHAT_IDLE_MS) {
             return "Closed automatically after 1 hour of inactivity.";
         }
         return "";
+    }
+
+    public boolean isReopenMessage(String body) {
+        return body != null && body.contains("[Chat reopened]");
+    }
+
+    /** An explicit closure marker ends the chat; admin idle time also ends it. */
+    public boolean chatClosed(String peer) {
+        if (peer == null || peer.isEmpty()) return false;
+        MainActivity.ChatMessage latest = latestMessage(peer);
+        if (latest != null && isClosureMessage(latest.body)) return true;
+        return adminChatClosed(peer);
+    }
+
+    public String chatClosedReason(String peer) {
+        MainActivity.ChatMessage latest = latestMessage(peer);
+        if (latest == null) return "";
+        String reason = closureReason(latest.body);
+        if (!reason.isEmpty()) return reason;
+        if (isAdminConversation(peer)
+                && System.currentTimeMillis() - latest.time > ADMIN_CHAT_IDLE_MS) {
+            return "Closed automatically after 1 hour of inactivity.";
+        }
+        return "";
+    }
+
+    /** Finish an order conversation without using the admin-report wording. */
+    public void closeMarketplaceChat(String peer, String reason) {
+        if (peer == null || peer.isEmpty() || peer.equals(HelperBot.PEER)) return;
+        MainActivity.ChatMessage latest = latestMessage(peer);
+        if (latest != null && isClosureMessage(latest.body)) return;
+        String detail = reason == null ? "" : reason.trim();
+        if (detail.length() > 300) detail = detail.substring(0, 300).trim();
+        String body = "[Chat closed]"
+                + (detail.isEmpty() ? " This order conversation has ended." : " " + detail);
+        host.chatMessages.add(new MainActivity.ChatMessage(host.currentStudentEmail, peer,
+                host.currentStudentName, body, System.currentTimeMillis(), false));
+        saveMessages();
+        if (peer.equals(host.openChatPeer) && host.openChatContainer != null) {
+            renderChat(host.openChatContainer, peer);
+            refreshOpenChatComposer();
+        }
+        cloudSendToPeer(peer, body);
+    }
+
+    public void closeMarketplaceChatForEmail(String email, String reason) {
+        final String clean = host.normalizeEmail(email);
+        if (clean.isEmpty()) return;
+        CloudSync.peerUid(host, clean, new CloudSync.StrCallback() {
+            @Override public void onOk(String peerUid) {
+                closeMarketplaceChat(peerUid, reason);
+            }
+            @Override public void onBad(String message) {
+                closeMarketplaceChat(clean, reason);
+            }
+        });
+    }
+
+    public void reopenMarketplaceChat(String peer, String note) {
+        if (peer == null || peer.isEmpty() || peer.equals(HelperBot.PEER)) return;
+        String detail = note == null ? "" : note.trim();
+        String body = "[Chat reopened]" + (detail.isEmpty() ? "" : " " + detail);
+        host.chatMessages.add(new MainActivity.ChatMessage(host.currentStudentEmail, peer,
+                host.currentStudentName, body, System.currentTimeMillis(), false));
+        saveMessages();
+        if (peer.equals(host.openChatPeer) && host.openChatContainer != null) {
+            renderChat(host.openChatContainer, peer);
+            refreshOpenChatComposer();
+        }
+        cloudSendToPeer(peer, body);
+    }
+
+    /** Open an order chat under the Marketplace filter. */
+    public void openOrderChat(String emailOrUid, boolean allowReopen) {
+        final String original = emailOrUid == null ? "" : emailOrUid.trim();
+        if (original.isEmpty()) return;
+        host.inboxFilter = "Marketplace";
+        host.inboxUnreadOnly = false;
+        host.chatReturnTab = "Inbox";
+        markMarketplaceChat(original);
+        CloudSync.peerUid(host, original, new CloudSync.StrCallback() {
+            @Override public void onOk(String peerUid) {
+                rekeyPeer(original, peerUid);
+                markMarketplaceChat(peerUid);
+                if (allowReopen && chatClosed(peerUid)) {
+                    reopenMarketplaceChat(peerUid, "You can continue this order conversation.");
+                }
+                showConversation(peerUid);
+            }
+            @Override public void onBad(String message) {
+                if (allowReopen && chatClosed(original)) {
+                    reopenMarketplaceChat(original, "You can continue this order conversation.");
+                }
+                showConversation(original);
+            }
+        });
     }
 
     /** Close a report conversation, leaving a visible marker for both sides. */
@@ -352,17 +470,20 @@ public class Inbox {
     public void refreshOpenChatComposer() {
         if (host.openChatComposer == null || host.openChatClosedNotice == null) return;
         String peer = host.openChatPeer;
-        boolean closed = adminChatClosed(peer);
+        boolean closed = chatClosed(peer);
         host.openChatComposer.setVisibility(closed ? View.GONE : View.VISIBLE);
         host.openChatClosedNotice.setVisibility(closed ? View.VISIBLE : View.GONE);
         if (closed) {
-            String reason = adminChatClosedReason(peer);
+            String reason = chatClosedReason(peer);
+            boolean admin = isAdminConversation(peer);
             boolean moderator = host.adminOnlySession || host.adminAccess || host.adminAccount;
             host.openChatClosedNotice.setText("Chat closed"
                     + (reason.isEmpty() ? "" : "\n" + reason)
-                    + (moderator
+                    + (admin
+                    ? (moderator
                     ? "\nTap here to reopen this conversation."
-                    : "\nEmail " + Constants.ADMIN_CHAT_EMAIL + " to open a new report conversation."));
+                    : "\nEmail " + Constants.ADMIN_CHAT_EMAIL + " to open a new report conversation.")
+                    : "\nThis order conversation has ended."));
         }
     }
 
@@ -887,6 +1008,8 @@ public class Inbox {
                 return;
             }
             sheet.dismiss();
+            host.inboxFilter = "All";
+            host.inboxUnreadOnly = false;
             host.chatReturnTab = "Inbox";
             showConversation(peer);
         });
@@ -973,6 +1096,10 @@ public class Inbox {
         closedNotice.setVisibility(View.GONE);
         closedNotice.setOnClickListener(v -> {
             String active = host.openChatPeer.isEmpty() ? peer : host.openChatPeer;
+            if (!isAdminConversation(active)) {
+                Toast.makeText(host, "This order conversation has ended.", Toast.LENGTH_SHORT).show();
+                return;
+            }
             if (host.adminOnlySession || host.adminAccess || host.adminAccount) {
                 reopenAdminChat(active);
                 return;
@@ -1025,9 +1152,12 @@ public class Inbox {
             String body = host.ui.text(message).trim();
             if (body.isEmpty()) return;
             String active = dialog.isShowing() && !host.openChatPeer.isEmpty() ? host.openChatPeer : peer;
-            if (adminChatClosed(active)) {
-                Toast.makeText(host, "This chat is closed. Email " + Constants.ADMIN_CHAT_EMAIL
-                        + " to open a new report conversation.", Toast.LENGTH_LONG).show();
+            if (chatClosed(active)) {
+                Toast.makeText(host, isAdminConversation(active)
+                                ? "This chat is closed. Email " + Constants.ADMIN_CHAT_EMAIL
+                                + " to open a new report conversation."
+                                : "This order conversation has ended.",
+                        Toast.LENGTH_LONG).show();
                 refreshOpenChatComposer();
                 return;
             }
@@ -1212,23 +1342,14 @@ public class Inbox {
                 lastDay = day;
             }
             if (isClosureMessage(m.body)) {
-                String reason = closureReason(m.body);
-                LinearLayout closed = host.ui.card(host.page, 0, host.ui.dp(12));
-                closed.setBackground(host.ui.strokedRound(host.surface(), 12, host.line));
-                TextView closedTitle = host.ui.titleText("Chat closed", host.text, 12);
-                closedTitle.setGravity(Gravity.CENTER);
-                closed.addView(closedTitle);
-                if (!reason.isEmpty()) {
-                    TextView closedReason = host.ui.bodyText(reason, host.muted, 11);
-                    closedReason.setGravity(Gravity.CENTER);
-                    closedReason.setPadding(0, host.ui.dp(4), 0, 0);
-                    closed.addView(closedReason);
-                }
-                LinearLayout.LayoutParams closedParams = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                closedParams.topMargin = host.ui.dp(8);
-                closedParams.bottomMargin = host.ui.dp(8);
-                container.addView(closed, closedParams);
+                container.addView(chatEventCard("Chat closed", closureReason(m.body)));
+                shown++;
+                continue;
+            }
+            if (isReopenMessage(m.body)) {
+                String detail = m.body.substring(m.body.indexOf("[Chat reopened]")
+                        + "[Chat reopened]".length()).trim();
+                container.addView(chatEventCard("Chat reopened", detail));
                 shown++;
                 continue;
             }
@@ -1285,6 +1406,26 @@ public class Inbox {
             container.addView(host.ui.emptyState("chat", "Start the conversation",
                     "Say hello and keep the details of your trade in one place."));
         }
+    }
+
+    private LinearLayout chatEventCard(String title, String detail) {
+        LinearLayout card = host.ui.card(host.page, 0, host.ui.dp(12));
+        card.setBackground(host.ui.strokedRound(host.surface(), 12, host.line));
+        TextView titleView = host.ui.titleText(title, host.text, 12);
+        titleView.setGravity(Gravity.CENTER);
+        card.addView(titleView);
+        if (detail != null && !detail.isEmpty()) {
+            TextView detailView = host.ui.bodyText(detail, host.muted, 11);
+            detailView.setGravity(Gravity.CENTER);
+            detailView.setPadding(0, host.ui.dp(4), 0, 0);
+            card.addView(detailView);
+        }
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = host.ui.dp(8);
+        params.bottomMargin = host.ui.dp(8);
+        card.setLayoutParams(params);
+        return card;
     }
 
     String chatDayKey(long time) {

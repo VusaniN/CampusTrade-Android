@@ -631,6 +631,8 @@ public class Order {
         Long invoiceTime = doc.getLong("invoiceFinalizedAt");
         record.invoiceFinalizedAt = invoiceTime == null ? 0 : invoiceTime;
         host.transactions.add(record);
+        host.inbox.markMarketplaceChat(record.isBuyer(host.currentStudentEmail)
+                ? record.sellerEmail : record.buyerEmail);
         host.ordersPulledChanged = true;
         syncListingFor(record);
         // Notify the seller only when the request still needs them.
@@ -1201,6 +1203,7 @@ public class Order {
                     order.deliveryAddress = fulfilment[0].equals("Local delivery") ? deliveryAddress : "";
                     order.createdTime = System.currentTimeMillis();
                     host.transactions.add(order);
+                    host.inbox.markMarketplaceChat(product.sellerEmail);
                     // Remove the order if saving fails so the screen matches storage.
                     if (!saveTransactions()) {
                         host.transactions.remove(order);
@@ -1534,7 +1537,7 @@ public class Order {
             Button contact = host.ui.secondaryButton("Contact student");
             contact.setOnClickListener(v -> {
                 if (sheetRef[0] != null) sheetRef[0].dismiss();
-                host.inbox.showConversation(order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail);
+                openOrderChat(order);
             });
             LinearLayout.LayoutParams contactParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(48));
             contactParams.topMargin = host.ui.dp(14);
@@ -2286,7 +2289,7 @@ public class Order {
                 primary.setText("Chat with buyer");
                 primary.setOnClickListener(v -> {
                     page.dismiss();
-                    host.inbox.showConversation(order.buyerEmail);
+                    openOrderChat(order);
                 });
             }
         } else if (order.returnPending()) {
@@ -2302,7 +2305,7 @@ public class Order {
             primary.setText("Contact student");
             primary.setOnClickListener(v -> {
                 page.dismiss();
-                host.inbox.showConversation(buyer ? order.sellerEmail : order.buyerEmail);
+                openOrderChat(order);
             });
         } else if (order.cancellationPending()) {
             primary.setText(order.cancellationRequester.equalsIgnoreCase(host.currentStudentEmail)
@@ -2312,7 +2315,7 @@ public class Order {
             primary.setText("Chat with " + (buyer ? "seller" : "buyer"));
             primary.setOnClickListener(v -> {
                 page.dismiss();
-                host.inbox.showConversation(buyer ? order.sellerEmail : order.buyerEmail);
+                openOrderChat(order);
             });
         }
 
@@ -2534,7 +2537,7 @@ public class Order {
             Button chat = host.ui.secondaryButton("Open chat");
             LinearLayout.LayoutParams chatParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(44));
             chatParams.topMargin = host.ui.dp(10);
-            chat.setOnClickListener(v -> host.inbox.showConversation(order.sellerEmail));
+            chat.setOnClickListener(v -> openOrderChat(order));
             contact.addView(chat, chatParams);
         } else {
             final boolean[] revealed = {false};
@@ -2809,6 +2812,8 @@ public class Order {
                     host.market.saveProducts();
                     cloudUpdateOrder(order);
                     refreshOrderTab();
+                    host.inbox.closeMarketplaceChatForEmail(order.buyerEmail,
+                            "Order " + order.id + " is complete. This order conversation has ended.");
                     host.notification.addNotification(order.buyerEmail, "Collection verified",
                             order.itemTitle + " · the seller verified your collection photo. Invoice " + order.invoiceNumber + " is ready.",
                             "payment", "", order.id);
@@ -2834,6 +2839,13 @@ public class Order {
                 ? "" : " · " + host.messageTime(pickup.updatedAt));
     }
 
+    /** Order conversations live in the Inbox Marketplace filter. */
+    private void openOrderChat(MainActivity.TransactionRecord order) {
+        String peer = order.isBuyer(host.currentStudentEmail) ? order.sellerEmail : order.buyerEmail;
+        boolean allowReopen = !order.status.equals(MainActivity.TransactionRecord.COMPLETED);
+        host.inbox.openOrderChat(peer, allowReopen);
+    }
+
     private void orderActionsSheet(MainActivity.TransactionRecord order, Dialog page) {
         boolean buyer = order.isBuyer(host.currentStudentEmail);
         LinearLayout body = new LinearLayout(host);
@@ -2847,7 +2859,7 @@ public class Order {
         addOrderAction(body, "chat", "Contact student", "Open the conversation", v -> {
             if (sheetRef[0] != null) sheetRef[0].dismiss();
             page.dismiss();
-            host.inbox.showConversation(buyer ? order.sellerEmail : order.buyerEmail);
+            openOrderChat(order);
         });
         if (order.status.equals(MainActivity.TransactionRecord.HELD) && !order.cancellationPending()) {
             if (order.deliveryOrder()) {
@@ -3134,6 +3146,8 @@ public class Order {
                     order.invoiceNumber = record.optString("invoiceNumber", "");
                     order.invoiceFinalizedAt = record.optLong("invoiceFinalizedAt", 0);
                     host.transactions.add(order);
+                    host.inbox.markMarketplaceChat(order.isBuyer(host.currentStudentEmail)
+                            ? order.sellerEmail : order.buyerEmail);
                 } catch (org.json.JSONException | IllegalArgumentException | ArithmeticException e) {
                     skipped = true;
                 }
