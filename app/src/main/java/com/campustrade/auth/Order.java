@@ -1026,8 +1026,14 @@ public class Order {
         form.addView(host.ui.bodyText("Choose how you will pay the seller. CampusTrade does not process or hold money.", host.muted, 12));
 
         form.addView(host.ui.label("Payment preference"));
+        boolean deliveryOnly = product.delivery != null
+                && product.delivery.toLowerCase(Locale.ROOT).contains("delivery")
+                && !product.delivery.toLowerCase(Locale.ROOT).contains("pickup or");
         // Only the chosen payment option is kept; card fields are ignored.
         final MainActivity.PaymentMethod[] selectedMethod = {preferredPaymentMethod()};
+        if (deliveryOnly && selectedMethod[0] == MainActivity.PaymentMethod.CASH) {
+            selectedMethod[0] = MainActivity.PaymentMethod.EFT;
+        }
         LinearLayout cardBox = host.ui.workflowForm();
         cardBox.addView(host.ui.label("Card details"));
         cardBox.addView(host.ui.bodyText("Enter the card details for this payment. Card details aren't stored on your device.", host.muted, 12));
@@ -1062,7 +1068,15 @@ public class Order {
             cardholder.setText(""); cardNumber.setText(""); cardExpiry.setText(""); cardCode.setText("");
         };
         if (freeItem) form.addView(host.ui.bodyText("Free collection / no payment required", host.readableInk(host.green), 14));
-        else addPaymentChoices(form, selectedMethod, updateCard);
+        else {
+            if (deliveryOnly) {
+                TextView note = host.ui.bodyText("This listing is delivery only. Cash on collection is unavailable; use EFT before dispatch.",
+                        host.muted, 11);
+                note.setPadding(0, host.ui.dp(6), 0, host.ui.dp(8));
+                form.addView(note);
+            }
+            addPaymentChoices(form, selectedMethod, updateCard, deliveryOnly);
+        }
         updateCard.run();
         form.addView(host.ui.label("Order total"));
         addPaymentBreakdown(form, new BigDecimal(quotedPrice));
@@ -1083,10 +1097,7 @@ public class Order {
         host.ui.themedToggle(preferMethod);
         if (!freeItem) form.addView(preferMethod);
 
-        boolean defaultsToDelivery = product.delivery != null
-                && product.delivery.toLowerCase(Locale.ROOT).contains("delivery")
-                && !product.delivery.toLowerCase(Locale.ROOT).contains("pickup or");
-        final String[] fulfilment = {defaultsToDelivery ? "Local delivery" : "Campus pickup"};
+        final String[] fulfilment = {deliveryOnly ? "Local delivery" : "Campus pickup"};
 
         LinearLayout pickupPanel = host.ui.workflowForm();
         TextView pickupTitle = host.ui.titleText("Campus pickup", host.text, 13);
@@ -1106,8 +1117,8 @@ public class Order {
         previewMap.setOnClickListener(v -> DeliveryMap.showAddressPreview(host,
                 host.ui.text(deliveryAddressInput).trim(), product.location));
         form.addView(deliveryPanel);
-        pickupPanel.setVisibility(defaultsToDelivery ? View.GONE : View.VISIBLE);
-        deliveryPanel.setVisibility(defaultsToDelivery ? View.VISIBLE : View.GONE);
+        pickupPanel.setVisibility(deliveryOnly ? View.GONE : View.VISIBLE);
+        deliveryPanel.setVisibility(deliveryOnly ? View.VISIBLE : View.GONE);
         // Checkout is full screen; the action stays at the bottom.
         Dialog page = host.ui.fullScreenForm();
         LinearLayout root = new LinearLayout(host);
@@ -1277,10 +1288,20 @@ public class Order {
     }
 
     public void addPaymentChoices(LinearLayout parent, MainActivity.PaymentMethod[] selected, Runnable onChange) {
+        addPaymentChoices(parent, selected, onChange, false);
+    }
+
+    /**
+     * Delivery-only listings cannot use cash on collection, so that option is
+     * shown muted and cannot be selected.
+     */
+    public void addPaymentChoices(LinearLayout parent, MainActivity.PaymentMethod[] selected,
+                                  Runnable onChange, boolean cashDisabled) {
         ArrayList<RadioButton> choices = new ArrayList<>();
         ArrayList<LinearLayout> cards = new ArrayList<>();
         for (MainActivity.PaymentMethod method : MainActivity.PaymentMethod.values()) {
             if (!method.offered()) continue;
+            boolean disabled = cashDisabled && method == MainActivity.PaymentMethod.CASH;
             LinearLayout option = new LinearLayout(host);
             option.setOrientation(LinearLayout.VERTICAL);
             option.setPadding(host.ui.dp(12), host.ui.dp(6), host.ui.dp(12), host.ui.dp(10));
@@ -1288,25 +1309,35 @@ public class Order {
             radio.setText(method.label);
             radio.setTextSize(14);
             host.ui.themedToggle(radio);
-            radio.setChecked(method == selected[0]);
+            radio.setChecked(!disabled && method == selected[0]);
+            radio.setEnabled(!disabled);
             choices.add(radio);
             cards.add(option);
             option.addView(radio, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, host.ui.dp(44)));
-            TextView description = host.ui.bodyText(method.description, host.muted, 12);
+            String descriptionText = disabled
+                    ? "Not available for delivery-only listings. Use EFT before dispatch."
+                    : method.description;
+            TextView description = host.ui.bodyText(descriptionText, host.muted, 12);
             description.setPadding(host.ui.dp(12), 0, host.ui.dp(4), 0);
             option.addView(description);
-            View.OnClickListener choose = v -> {
-                selected[0] = method;
-                for (int i = 0; i < choices.size(); i++) {
-                    boolean active = choices.get(i) == radio;
-                    choices.get(i).setChecked(active);
-                    stylePaymentOption(cards.get(i), active);
-                }
-                onChange.run();
-            };
-            radio.setOnClickListener(choose);
-            option.setOnClickListener(choose);
-            stylePaymentOption(option, method == selected[0]);
+            if (disabled) {
+                radio.setTextColor(host.muted);
+                option.setAlpha(0.48f);
+                stylePaymentOption(option, false);
+            } else {
+                View.OnClickListener choose = v -> {
+                    selected[0] = method;
+                    for (int i = 0; i < choices.size(); i++) {
+                        boolean active = choices.get(i) == radio;
+                        choices.get(i).setChecked(active);
+                        stylePaymentOption(cards.get(i), active);
+                    }
+                    onChange.run();
+                };
+                radio.setOnClickListener(choose);
+                option.setOnClickListener(choose);
+                stylePaymentOption(option, method == selected[0]);
+            }
             LinearLayout.LayoutParams optionParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             optionParams.bottomMargin = host.ui.dp(10);
